@@ -70,7 +70,7 @@ export function BookingDialog(props: {
     phone: props.initial.phone ?? "",
     room_type: props.initial.room_type ?? "",
     check_in_date: props.initial.date ?? new Date().toISOString().slice(0, 10),
-    nights: 1,
+    nights: 0,
     adults: 2,
     children: 0,
     meal_plan: "",
@@ -153,7 +153,7 @@ export function BookingDialog(props: {
 
   const checkOut = (() => {
     const d = new Date(form.check_in_date)
-    d.setDate(d.getDate() + Math.max(1, form.nights))
+    d.setDate(d.getDate() + Math.max(0, form.nights))
     return d.toISOString().slice(0, 10)
   })()
 
@@ -572,7 +572,7 @@ export function BookingDialog(props: {
                       className={inputCls}
                       value={form.phone}
                       onChange={(e) => set("phone", e.target.value)}
-                      placeholder="+91 …"
+                      placeholder="+94 …"
                     />
                   </Field>
                 </div>
@@ -585,8 +585,8 @@ export function BookingDialog(props: {
                   >
                     {options?.room_types.map((rt) => (
                       <option key={rt.name} value={rt.name}>
-                        {rt.room_type_name} · {cur()}
-                        {inr(rt.base_price)}/night
+                        {rt.room_type_name} · {/* {cur()}
+                        {inr(rt.base_price)}/night */}
                       </option>
                     ))}
                   </select>
@@ -614,11 +614,11 @@ export function BookingDialog(props: {
                   <Field label="Nights">
                     <input
                       type="number"
-                      min={1}
+                      min={0}
                       className={inputCls}
                       value={form.nights}
                       onChange={(e) =>
-                        set("nights", Math.max(1, Number(e.target.value)))
+                        set("nights", Math.max(0, Number(e.target.value)))
                       }
                     />
                   </Field>
@@ -676,8 +676,8 @@ export function BookingDialog(props: {
                       <option value="">Room only</option>
                       {options?.meal_plans.map((mp) => (
                         <option key={mp.name} value={mp.name}>
-                          {mp.label} (+{cur()}
-                          {inr(mp.price_per_adult)}/adult)
+                          {mp.label} {/*(+{cur()}
+                          {inr(mp.price_per_adult)}/adult)*/}
                         </option>
                       ))}
                     </select>
@@ -915,7 +915,7 @@ export function BookingDialog(props: {
                                     onChange={(e) =>
                                       set("booked_by_phone", e.target.value)
                                     }
-                                    placeholder="+91 …"
+                                    placeholder="+94 …"
                                   />
                                 </Field>
                               </div>
