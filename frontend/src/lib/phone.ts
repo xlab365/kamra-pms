@@ -17,6 +17,8 @@ const DIAL_BY_COUNTRY: Record<string, string> = {
   sg: "65",
   australia: "61",
   au: "61",
+  srilanka: "94",
+  sl: "94",
 }
 
 function dialForCountry(country?: string | null): string {
