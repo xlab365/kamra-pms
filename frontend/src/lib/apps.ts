@@ -94,9 +94,9 @@ export const APPS: AppDef[] = [
     items: [
       { to: "/", label: "Today", icon: Home },
       { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
-      /*{ to: "/assistant", label: "Kamra Agent", icon: Sparkles }, 
-      { to: "/reservations", label: "Reservations", icon: ClipboardList }, 
-      { to: "/crs", label: "Central Reservations", icon: Search },  */
+      // { to: "/assistant", label: "Kamra Agent", icon: Sparkles }, 
+      { to: "/reservations", label: "Reservations", icon: ClipboardList, roles: ["Hotel Admin", "System Manager", "Administrator"] }, 
+      // { to: "/crs", label: "Central Reservations", icon: Search },  
       { to: "/tape", label: "Tape Chart", icon: LayoutGrid },
       { to: "/calendar", label: "Calendar", icon: CalendarDays },
       // { to: "/guests", label: "Guests", icon: Users },
