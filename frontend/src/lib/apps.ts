@@ -115,11 +115,18 @@ export const APPS: AppDef[] = [
     roles: ["Front Desk", "Night Auditor", "Hotel Admin", "System Manager", "Administrator"],
     items: [
       { to: "/", label: "Today", icon: Home },
+<<<<<<< HEAD
       { to: "/assistant", label: "Kamra Agent", icon: Sparkles, featured: true,
         keywords: ["AI", "Assistant", "Copilot", "Ask"] },
       { to: "/in-house", label: "In House", icon: BedDouble,
         keywords: ["Arrivals", "Departures", "In-house guests", "Who is in", "Due out"] },
       { to: "/reservations", label: "Reservations", icon: ClipboardList },
+=======
+      { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
+      { to: "/assistant", label: "Kamra Agent", icon: Sparkles },
+      { to: "/reservations", label: "Reservations", icon: ClipboardList },
+      { to: "/crs", label: "Central Reservations", icon: Search },
+>>>>>>> parent of a7dff811 (Update frontend\src\lib\apps.ts)
       { to: "/tape", label: "Tape Chart", icon: LayoutGrid },
       { to: "/room-board", label: "Rooms", icon: DoorOpen,
         keywords: ["Room board", "Room status", "Out of order", "Room history"] },
@@ -127,7 +134,11 @@ export const APPS: AppDef[] = [
       { to: "/end-of-day", label: "Night Audit", icon: MoonStar,
         keywords: EOD_KEYWORDS },
       { to: "/calendar", label: "Calendar", icon: CalendarDays },
+<<<<<<< HEAD
       { to: "/crs", label: "Central Reservations", icon: Search },
+=======
+      { to: "/guests", label: "Guests", icon: Users },
+>>>>>>> parent of a7dff811 (Update frontend\src\lib\apps.ts)
       { to: "/room-blocks", label: "Room Blocks", icon: Lock },
       { to: "/reports", label: "Reports", icon: ChartLine },
       { to: "/settings/front-desk", label: "Settings", icon: SettingsIcon,
@@ -169,7 +180,11 @@ export const APPS: AppDef[] = [
     name: "Operations",
     icon: ListTodo,
     tint: APP_TILE,
+<<<<<<< HEAD
     description: "Guest requests and ops workflows.",
+=======
+    description: "Guest requests and shift handovers.",
+>>>>>>> parent of a7dff811 (Update frontend\src\lib\apps.ts)
     roles: ["Front Desk", "Hotel Admin", "System Manager", "Administrator"],
     items: [
       { to: "/tickets", label: "Guest Requests (Tickets)", icon: Ticket, keywords: ["tickets", "service ticket", "complaint", "sla", "request"] },
@@ -188,7 +203,7 @@ export const APPS: AppDef[] = [
     icon: UtensilsCrossed,
     tint: APP_TILE,
     description: "Restaurant POS, kitchen display, the menu and kitchen stock.",
-    roles: ["Front Desk", /** "Finance", */ "Hotel Admin", "System Manager", "Administrator"],
+    roles: ["Front Desk", "Finance", "Hotel Admin", "System Manager", "Administrator"],
     items: [
       { to: "/pos", label: "Restaurant POS", icon: UtensilsCrossed },
       { to: "/pos-dashboard", label: "F&B Dashboard", icon: TrendingUp },
@@ -211,7 +226,7 @@ export const APPS: AppDef[] = [
     tint: APP_TILE,
     description:
       "Function prospecting, quotations and event orders - plus room blocks and pickup.",
-    roles: ["Front Desk", "Revenue Manager", "Hotel Admin", "System Manager", "Administrator", "Finance"],
+    roles: ["Front Desk", "Revenue Manager", "Hotel Admin", "System Manager", "Administrator"],
     items: [
       { to: "/banquet", label: "Banquets", icon: CalendarRange },
       { to: "/banquet-month", label: "Month Availability", icon: CalendarRange },
@@ -232,7 +247,7 @@ export const APPS: AppDef[] = [
     icon: BarChart3,
     tint: APP_TILE,
     description: "Rates, seasons, offers and the partners who sell you.",
-    roles: ["Revenue Manager", "Hotel Admin", "System Manager", "Administrator", "Finance"],
+    roles: ["Revenue Manager", "Hotel Admin", "System Manager", "Administrator"],
     items: [
       { to: "/dashboard", label: "Revenue Dashboard", icon: LayoutDashboard,
         keywords: ["Dashboard", "KPIs", "ADR", "RevPAR", "Portfolio"] },
@@ -305,7 +320,7 @@ export const APPS: AppDef[] = [
     icon: Globe,
     tint: APP_TILE,
     description: "Manage direct booking setup, property profile, photo gallery, FAQs, and SEO rules.",
-    roles: [ /** "Revenue Manager", */ "Hotel Admin", "System Manager", "Administrator"],
+    roles: ["Revenue Manager", "Hotel Admin", "System Manager", "Administrator"],
     items: [
       { to: "/booking-settings/profile", label: "Hotel Profile", icon: Home },
       { to: "/booking-settings/amenities", label: "Amenities", icon: ClipboardList },
