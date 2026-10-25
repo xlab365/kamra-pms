@@ -45,6 +45,8 @@ import {
   STATUSES,
   today,
 } from "./banquet/shared"
+import { useT, t as translate } from "../lib/i18n"
+
 
 type Tab = "today" | "pipeline" | "functions"
 
@@ -65,11 +67,15 @@ interface FunctionRow extends Row {
 }
 
 export default function Banquet() {
+  const { t } = useT()
   const navigate = useNavigate()
   const [tab, setTab] = useState<Tab>("today")
   const [error, setError] = useState<string | null>(null)
   const [reminders, setReminders] = useState<ReminderRow[] | null>(null)
   const [pipeline, setPipeline] = useState<BanquetPipeline | null>(null)
+  // "" = the next six months from the 1st
+  const [fromDate, setFromDate] = useState("")
+  const [toDate, setToDate] = useState("")
   const [rows, setRows] = useState<FunctionRow[] | null>(null)
   const [query, setQuery] = useState("")
   const [statusFilter, setStatusFilter] = useState("")
@@ -93,10 +99,6 @@ export default function Banquet() {
     banquet
       .reminders(60)
       .then((r) => setReminders(r.functions))
-      .catch((e) => setError(serverError(e)))
-    banquet
-      .pipeline({ months: 6 })
-      .then(setPipeline)
       .catch((e) => setError(serverError(e)))
     listResource("Venue Booking", {
       fields: [
@@ -122,6 +124,12 @@ export default function Banquet() {
       .catch((e) => setError(serverError(e)))
   }, [])
   useEffect(load, [load])
+  useEffect(() => {
+    banquet
+      .pipeline(fromDate && toDate ? { from_date: fromDate, to_date: toDate } : { months: 6 })
+      .then(setPipeline)
+      .catch((e) => setError(serverError(e)))
+  }, [fromDate, toDate])
 
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -146,21 +154,20 @@ export default function Banquet() {
         <div>
           <h1 className="flex items-center gap-2 text-lg font-semibold">
             <PartyPopper className="size-5 text-violet-600" />
-            Banquets
+            {t("Banquets")}
           </h1>
           <p className="mt-0.5 text-sm text-zinc-400">
-            Function prospecting through to the event order - enquiry,
-            quotation, contract, and the day itself.
+            {t("Function prospecting through to the event order - enquiry, quotation, contract, and the day itself.")}
           </p>
         </div>
         <div className="flex items-center gap-2">
           <Button variant="outline" onClick={() => navigate("/banquet-diary")}>
             <CalendarDays className="size-4" />
-            Diary
+            {t("Diary")}
           </Button>
           <Button onClick={() => setEnquiry(true)}>
             <Plus className="size-4" />
-            New enquiry
+            {t("New enquiry")}
           </Button>
         </div>
       </div>
@@ -170,30 +177,30 @@ export default function Banquet() {
       {pipeline && (
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           <Stat
-            label="Confirmed, 6 months"
+            label={t("Confirmed, 6 months")}
             value={inr(pipeline.totals.confirmed_value)}
-            sub={`${pipeline.totals.functions} functions on the books`}
+            sub={t("{n} functions on the books", { n: pipeline.totals.functions })}
           />
           <Stat
-            label="Still in play"
+            label={t("Still in play")}
             value={inr(pipeline.totals.pipeline_value)}
-            sub="Enquiries and tentative holds"
+            sub={t("Enquiries and tentative holds")}
             tone="text-amber-700"
           />
           <Stat
-            label="Outstanding"
+            label={t("Outstanding")}
             value={inr(pipeline.totals.outstanding)}
-            sub="Confirmed but unpaid"
+            sub={t("Confirmed but unpaid")}
             tone={pipeline.totals.outstanding ? "text-rose-700" : ""}
           />
           <Stat
-            label="Conversion"
+            label={t("Conversion")}
             value={
               pipeline.totals.conversion_rate === null
                 ? "-"
                 : `${pipeline.totals.conversion_rate}%`
             }
-            sub="Of everything decided"
+            sub={t("Of everything decided")}
           />
         </div>
       )}
@@ -201,9 +208,9 @@ export default function Banquet() {
       <div className="flex gap-1 border-b border-zinc-200">
         {(
           [
-            ["today", `Needs chasing${urgent.length ? ` (${urgent.length})` : ""}`],
-            ["pipeline", "Month by month"],
-            ["functions", "All functions"],
+            ["today", t("Needs chasing{urgent}", { urgent: urgent.length ? ` (${urgent.length})` : "" })],
+            ["pipeline", t("Month by month")],
+            ["functions", t("All functions")],
           ] as [Tab, string][]
         ).map(([id, label]) => (
           <button
@@ -216,7 +223,7 @@ export default function Banquet() {
                 : "border-transparent text-zinc-500 hover:text-zinc-800")
             }
           >
-            {label}
+            {translate(label)}
           </button>
         ))}
       </div>
@@ -228,18 +235,40 @@ export default function Banquet() {
         />
       )}
 
-      {tab === "pipeline" && <PipelineBoard data={pipeline} />}
+      {tab === "pipeline" && (
+        <>
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              type="date"
+              aria-label={t("From")}
+              className="rounded-lg border border-zinc-300 px-2 py-1.5 text-sm"
+              value={fromDate}
+              onChange={(e) => setFromDate(e.target.value)}
+            />
+            <span className="text-sm text-zinc-400">→</span>
+            <input
+              type="date"
+              aria-label={t("To")}
+              className="rounded-lg border border-zinc-300 px-2 py-1.5 text-sm"
+              value={toDate}
+              min={fromDate || undefined}
+              onChange={(e) => setToDate(e.target.value)}
+            />
+          </div>
+          <PipelineBoard data={pipeline} />
+        </>
+      )}
 
       {tab === "functions" && (
         <Card>
           <CardHeader>
-            <CardTitle>All functions</CardTitle>
+            <CardTitle>{t("All functions")}</CardTitle>
             <div className="flex flex-wrap items-center gap-1.5">
               <div className="relative">
                 <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-zinc-400" />
                 <input
                   className={inputCls + " !w-52 pl-8"}
-                  placeholder="Customer, company, hall…"
+                  placeholder={t("Customer, company, hall…")}
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
                 />
@@ -249,9 +278,9 @@ export default function Banquet() {
                 value={statusFilter}
                 onChange={(e) => setStatusFilter(e.target.value)}
               >
-                <option value="">All statuses</option>
+                <option value="">{t("All statuses")}</option>
                 {STATUSES.map((s) => (
-                  <option key={s}>{s}</option>
+                  <option key={s} value={s}>{translate(s)}</option>
                 ))}
               </select>
             </div>
@@ -260,22 +289,22 @@ export default function Banquet() {
             {visible.length === 0 ? (
               <Empty>
                 {rows === null
-                  ? "Loading…"
-                  : "Nothing here yet - start with a new enquiry."}
+                  ? t("Loading…")
+                  : t("Nothing here yet - start with a new enquiry.")}
               </Empty>
             ) : (
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b border-zinc-200 text-left text-xs uppercase tracking-wider text-zinc-400">
-                      <th className="py-2 pr-3 font-medium">Date</th>
-                      <th className="py-2 pr-3 font-medium">Customer</th>
-                      <th className="py-2 pr-3 font-medium">Hall</th>
-                      <th className="py-2 pr-3 font-medium">Type</th>
-                      <th className="py-2 pr-3 text-right font-medium">Pax</th>
-                      <th className="py-2 pr-3 text-right font-medium">Value</th>
-                      <th className="py-2 pr-3 text-right font-medium">Due</th>
-                      <th className="py-2 font-medium">Status</th>
+                      <th className="py-2 pr-3 font-medium">{t("Date")}</th>
+                      <th className="py-2 pr-3 font-medium">{t("Customer")}</th>
+                      <th className="py-2 pr-3 font-medium">{t("Hall")}</th>
+                      <th className="py-2 pr-3 font-medium">{t("Type")}</th>
+                      <th className="py-2 pr-3 text-right font-medium">{t("Pax")}</th>
+                      <th className="py-2 pr-3 text-right font-medium">{t("Value")}</th>
+                      <th className="py-2 pr-3 text-right font-medium">{t("Due")}</th>
+                      <th className="py-2 font-medium">{t("Status")}</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -303,7 +332,7 @@ export default function Banquet() {
                         </td>
                         <td className="py-2 pr-3 text-zinc-600">{r.venue}</td>
                         <td className="py-2 pr-3 text-zinc-600">
-                          {r.event_type}
+                          {translate(r.event_type)}
                         </td>
                         <td className="py-2 pr-3 text-right tabular-nums">
                           {r.pax_guaranteed || r.attendees || "-"}
@@ -358,14 +387,14 @@ function RemindersBoard({
   rows: ReminderRow[] | null
   onOpen: (fn: string) => void
 }) {
-  if (rows === null) return <Empty>Loading…</Empty>
+  const { t } = useT()
+  if (rows === null) return <Empty>{t("Loading…")}</Empty>
   if (rows.length === 0)
     return (
       <Card>
         <CardContent>
           <Empty>
-            Nothing is waiting on you - every follow-up, hold and payment is
-            current.
+            {t("Nothing is waiting on you - every follow-up, hold and payment is current.")}
           </Empty>
         </CardContent>
       </Card>
@@ -407,7 +436,7 @@ function RemindersBoard({
                       (a.urgency === "high" ? "text-amber-800" : "text-zinc-500")
                     }
                   >
-                    {a.message}
+                    {translate(a.message)}
                   </li>
                 ))}
               </ul>
@@ -416,7 +445,7 @@ function RemindersBoard({
               <div>{inr(f.grand_total)}</div>
               {f.balance_due > 0 && (
                 <div className="text-xs text-rose-700">
-                  {inr(f.balance_due)} due
+                  {inr(f.balance_due)} {t("due")}
                 </div>
               )}
             </div>
@@ -430,7 +459,8 @@ function RemindersBoard({
 /* ── month by month ───────────────────────────────────────────────────── */
 
 function PipelineBoard({ data }: { data: BanquetPipeline | null }) {
-  if (!data) return <Empty>Loading…</Empty>
+  const { t, tn } = useT()
+  if (!data) return <Empty>{t("Loading…")}</Empty>
   const peak = Math.max(
     1,
     ...data.months.map((m) => m.confirmed_value + m.pipeline_value),
@@ -442,16 +472,16 @@ function PipelineBoard({ data }: { data: BanquetPipeline | null }) {
           <CardTitle>
             <span className="inline-flex items-center gap-1.5">
               <TrendingUp className="size-4" />
-              Where the months are landing
+              {t("Where the months are landing")}
             </span>
           </CardTitle>
           <span className="text-xs text-zinc-400">
-            {data.from} → {data.to}, by event date
+            {data.from} → {data.to}, {t("by event date")}
           </span>
         </CardHeader>
         <CardContent>
           {data.months.length === 0 ? (
-            <Empty>No functions in this window.</Empty>
+            <Empty>{t("No functions in this window.")}</Empty>
           ) : (
             <div className="space-y-3">
               {data.months.map((m) => (
@@ -459,17 +489,16 @@ function PipelineBoard({ data }: { data: BanquetPipeline | null }) {
                   <div className="flex items-baseline justify-between text-sm">
                     <span className="font-medium">{monthName(m.month)}</span>
                     <span className="tabular-nums text-zinc-500">
-                      {inr(m.confirmed_value)} confirmed
+                      {inr(m.confirmed_value)} {t("confirmed")}
                       {m.pipeline_value > 0 && (
                         <span className="text-amber-700">
                           {" "}
-                          + {inr(m.pipeline_value)} in play
+                          + {inr(m.pipeline_value)} {t("in play")}
                         </span>
                       )}
                       <span className="text-zinc-400">
                         {" "}
-                        · {m.count} function{m.count === 1 ? "" : "s"} ·{" "}
-                        {m.pax} pax
+                        · {tn(m.count, "{n} function", "{n} functions")} · {t("{pax} pax", { pax: m.pax })}
                       </span>
                     </span>
                   </div>
@@ -487,7 +516,7 @@ function PipelineBoard({ data }: { data: BanquetPipeline | null }) {
                   </div>
                   {m.outstanding > 0 && (
                     <p className="mt-0.5 text-xs text-rose-700">
-                      {inr(m.outstanding)} still to collect
+                      {t("{amount} still to collect", { amount: inr(m.outstanding) })}
                     </p>
                   )}
                 </div>
@@ -498,15 +527,15 @@ function PipelineBoard({ data }: { data: BanquetPipeline | null }) {
       </Card>
 
       <div className="grid gap-4 lg:grid-cols-3">
-        <BreakdownCard title="By status" rows={data.by_status} />
-        <BreakdownCard title="By event type" rows={data.by_event_type} />
-        <BreakdownCard title="By hall" rows={data.by_venue} />
+        <BreakdownCard title={t("By status")} rows={data.by_status} />
+        <BreakdownCard title={t("By event type")} rows={data.by_event_type} />
+        <BreakdownCard title={t("By hall")} rows={data.by_venue} />
       </div>
 
       {data.lost_reasons.length > 0 && (
         <Card>
           <CardHeader>
-            <CardTitle>Why business went away</CardTitle>
+            <CardTitle>{t("Why business went away")}</CardTitle>
           </CardHeader>
           <CardContent>
             <ul className="space-y-1 text-sm">
@@ -531,15 +560,16 @@ function BreakdownCard({
   title: string
   rows: BanquetPipeline["by_status"]
 }) {
+  const { t } = useT()
   const peak = Math.max(1, ...rows.map((r) => r.value))
   return (
     <Card>
       <CardHeader>
-        <CardTitle>{title}</CardTitle>
+        <CardTitle>{translate(title)}</CardTitle>
       </CardHeader>
       <CardContent>
         {rows.length === 0 ? (
-          <Empty>Nothing yet.</Empty>
+          <Empty>{t("Nothing yet.")}</Empty>
         ) : (
           <ul className="space-y-2">
             {rows.map((r) => (
@@ -578,6 +608,7 @@ function EnquirySheet({
   onClose: () => void
   onCreated: (fn: string) => void
 }) {
+  const { t } = useT()
   const [form, setForm] = useState({
     customer_name: "",
     customer_phone: "",
@@ -610,7 +641,7 @@ function EnquirySheet({
     : (SESSION_HOURS[form.session] ?? ["", ""])
 
   useEffect(() => {
-    listResource("Company", { fields: ["name", "company_name"], limit: 200 })
+    listResource("Corporate Account", { fields: ["name", "company_name"], limit: 200 })
       .then(setCompanies)
       .catch(() => {})
   }, [])
@@ -648,8 +679,8 @@ function EnquirySheet({
   }, [form.event_date, form.end_date, from, to, form.attendees])
 
   async function submit() {
-    if (!form.customer_name.trim()) return setError("Whose function is this?")
-    if (!form.venue) return setError("Pick a hall.")
+    if (!form.customer_name.trim()) return setError(t("Whose function is this?"))
+    if (!form.venue) return setError(t("Pick a hall."))
     setBusy(true)
     setError(null)
     try {
@@ -681,17 +712,17 @@ function EnquirySheet({
 
   return (
     <Sheet
-      title="New function enquiry"
-      description="The hall's rack rental goes on as the first line - the number the conversation starts from."
+      title={t("New function enquiry")}
+      description={t("The hall's rack rental goes on as the first line - the number the conversation starts from.")}
       onClose={onClose}
       wide
       footer={
         <div className="flex justify-end gap-2">
           <Button variant="outline" onClick={onClose}>
-            Cancel
+            {t("Cancel")}
           </Button>
           <Button disabled={busy} onClick={submit}>
-            Open the enquiry
+            {t("Open the enquiry")}
           </Button>
         </div>
       }
@@ -699,21 +730,21 @@ function EnquirySheet({
       <ErrorNote error={error} />
       <div className="space-y-4">
         <div className="grid gap-3 sm:grid-cols-2">
-          <Field label="Customer name">
+          <Field label={t("Customer name")}>
             <input
               className={inputCls}
               value={form.customer_name}
               onChange={(e) => set("customer_name", e.target.value)}
             />
           </Field>
-          <Field label="Phone">
+          <Field label={t("Phone")}>
             <input
               className={inputCls}
               value={form.customer_phone}
               onChange={(e) => set("customer_phone", e.target.value)}
             />
           </Field>
-          <Field label="Email">
+          <Field label={t("Email")}>
             <input
               className={inputCls}
               value={form.customer_email}
@@ -721,15 +752,15 @@ function EnquirySheet({
             />
           </Field>
           <Field
-            label="Company"
-            hint="Set for corporate business - it also decides which folio the bill lands on."
+            label={t("Company")}
+            hint={t("Set for corporate business - it also decides which folio the bill lands on.")}
           >
             <select
               className={inputCls}
               value={form.company}
               onChange={(e) => set("company", e.target.value)}
             >
-              <option value="">Not a corporate booking</option>
+              <option value="">{t("Not a corporate booking")}</option>
               {companies.map((c) => (
                 <option key={c.name} value={c.name}>
                   {String(c.company_name ?? c.name)}
@@ -740,30 +771,32 @@ function EnquirySheet({
         </div>
 
         <div className="grid gap-3 sm:grid-cols-4">
-          <Field label="Event type">
+          <Field label={t("Event type")}>
             <Select
               value={form.event_type}
               onChange={(v) => set("event_type", v)}
               options={EVENT_TYPES}
             />
           </Field>
-          <Field label="Date">
+          <Field label={t("Date")}>
             <input
               type="date"
               className={inputCls}
+              min={today()}
               value={form.event_date}
               onChange={(e) => set("event_date", e.target.value)}
             />
           </Field>
-          <Field label="Ends" hint="Blank for a single day">
+          <Field label={t("Ends")} hint={t("Blank for a single day")}>
             <input
               type="date"
               className={inputCls}
+              min={form.event_date || today()}
               value={form.end_date}
               onChange={(e) => set("end_date", e.target.value)}
             />
           </Field>
-          <Field label="Expected pax">
+          <Field label={t("Expected pax")}>
             <input
               type="number"
               className={inputCls}
@@ -772,8 +805,8 @@ function EnquirySheet({
             />
           </Field>
           <Field
-            label="Session"
-            hint={custom ? undefined : `${from}–${to}`}
+            label={t("Session")}
+            hint={translate(custom ? undefined : `${from}-${to}`)}
           >
             <Select
               value={form.session}
@@ -783,7 +816,7 @@ function EnquirySheet({
           </Field>
           {custom && (
             <>
-              <Field label="From">
+              <Field label={t("From")}>
                 <input
                   type="time"
                   className={inputCls}
@@ -791,7 +824,7 @@ function EnquirySheet({
                   onChange={(e) => set("start_time", e.target.value)}
                 />
               </Field>
-              <Field label="To">
+              <Field label={t("To")}>
                 <input
                   type="time"
                   className={inputCls}
@@ -801,7 +834,7 @@ function EnquirySheet({
               </Field>
             </>
           )}
-          <Field label="Came from">
+          <Field label={t("Came from")}>
             <Select
               value={form.source}
               onChange={(v) => set("source", v)}
@@ -812,10 +845,14 @@ function EnquirySheet({
 
         <div>
           <p className="mb-2 text-xs font-medium text-zinc-500">
-            Which hall - free for these dates and hours
+            {t("Which hall - free for these dates and hours")}
           </p>
           {avail === null ? (
-            <p className="text-sm text-zinc-400">Checking…</p>
+            <p className="text-sm text-zinc-400">{t("Checking…")}</p>
+          ) : avail.length === 0 ? (
+            <p className="text-sm text-zinc-500">
+              {t("No halls set up for this property yet - add one under Halls & Venues.")}
+            </p>
           ) : (
             <div className="grid gap-2 sm:grid-cols-2">
               {avail.map((v) => {
@@ -842,23 +879,23 @@ function EnquirySheet({
                       </span>
                     </div>
                     <div className="mt-0.5 text-xs text-zinc-400">
-                      {v.venue_type} · seats {v.capacity}
-                      {v.hourly_rate ? ` · ${inr(v.hourly_rate)}/hr` : ""}
+                      {translate(v.venue_type)} · {t("seats {n}", { n: v.capacity })}
+                      {v.hourly_rate ? translate(" · {v0}/hr", { v0: String(inr(v.hourly_rate)) }) : ""}
                     </div>
                     {blocked && (
                       <div className="mt-1 text-xs text-rose-700">
-                        Taken: {v.conflicts[0]?.customer_name}
+                        {t("Taken")}: {v.conflicts[0]?.customer_name}
                       </div>
                     )}
                     {!blocked && tooSmall && (
                       <div className="mt-1 text-xs text-amber-700">
-                        Smaller than the pax count
+                        {t("Smaller than the pax count")}
                       </div>
                     )}
                     {!blocked &&
                       v.conflicts.some((c) => c.kind === "tentative") && (
                         <div className="mt-1 text-xs text-amber-700">
-                          Soft hold you can sell over
+                          {t("Soft hold you can sell over")}
                         </div>
                       )}
                   </button>
@@ -868,17 +905,19 @@ function EnquirySheet({
           )}
           {chosen && chosen.under_minimum && (
             <p className="mt-2 text-xs text-amber-700">
-              {chosen.venue_name} usually takes {chosen.min_capacity}+ - check
-              the minimum spend applies.
+              {t("{name} usually takes {min}+ - check the minimum spend applies.", {
+                name: chosen.venue_name,
+                min: chosen.min_capacity,
+              })}
             </p>
           )}
         </div>
 
-        <Field label="What they asked for">
+        <Field label={t("What they asked for")}>
           <textarea
             rows={3}
             className={inputCls}
-            placeholder="300 pax sangeet, veg buffet, DJ till 1am, green room for the bride…"
+            placeholder={t("300 pax sangeet, veg buffet, DJ till 1am, green room for the bride…")}
             value={form.requirements}
             onChange={(e) => set("requirements", e.target.value)}
           />

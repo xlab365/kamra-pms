@@ -48,6 +48,18 @@
   "actual_check_in",
   "column_break_d",
   "actual_check_out",
+  "sb_checkin_record",
+  "checked_in_by",
+  "checked_in_at",
+  "room_assigned_by",
+  "room_assigned_at",
+  "cb_checkin_record",
+  "keys_issued_by",
+  "keys_issued_at",
+  "key_count",
+  "key_cards",
+  "room_charges_allowed",
+  "checkin_steps",
   "sb_money",
   "amount_before_tax",
   "tax_amount",
@@ -58,6 +70,7 @@
   "voucher",
   "discount_amount",
   "auto_price",
+  "agreed_rate",
   "sb_notes",
   "special_requests",
   "sb_precheckin",
@@ -74,6 +87,7 @@
   "precheckin_verified_on",
   "precheckin_link_sent",
   "eta",
+  "late_arrival",
   "sb_arrival",
   "arrival_mode",
   "arrival_ref",
@@ -89,6 +103,10 @@
   "sb_extras",
   "purpose",
   "extra_beds",
+  "over_capacity_guests",
+  "over_capacity_charge",
+  "over_capacity_reason",
+  "pets",
   "infants",
   "cb_extras",
   "valet_parking",
@@ -108,6 +126,8 @@
   "advance_due",
   "payment_policy",
   "quote_snapshot",
+  "night_rates",
+  "rate_lock_key",
   "access_released",
   "access_released_on"
  ],
@@ -272,6 +292,82 @@
    "read_only": 1
   },
   {
+   "fieldname": "sb_checkin_record",
+   "fieldtype": "Section Break",
+   "label": "Check-in record",
+   "collapsible": 1
+  },
+  {
+   "fieldname": "checked_in_by",
+   "fieldtype": "Link",
+   "label": "Checked In By",
+   "options": "User",
+   "read_only": 1
+  },
+  {
+   "fieldname": "checked_in_at",
+   "fieldtype": "Datetime",
+   "label": "Checked In At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "room_assigned_by",
+   "fieldtype": "Link",
+   "label": "Room Assigned By",
+   "options": "User",
+   "read_only": 1
+  },
+  {
+   "fieldname": "room_assigned_at",
+   "fieldtype": "Datetime",
+   "label": "Room Assigned At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "cb_checkin_record",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "keys_issued_by",
+   "fieldtype": "Link",
+   "label": "Keys Issued By",
+   "options": "User",
+   "read_only": 1
+  },
+  {
+   "fieldname": "keys_issued_at",
+   "fieldtype": "Datetime",
+   "label": "Keys Issued At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "key_count",
+   "fieldtype": "Int",
+   "label": "Keys Issued",
+   "read_only": 1
+  },
+  {
+   "fieldname": "key_cards",
+   "fieldtype": "Small Text",
+   "label": "Key Card Numbers",
+   "read_only": 1
+  },
+  {
+   "default": "1",
+   "fieldname": "room_charges_allowed",
+   "fieldtype": "Check",
+   "label": "Room Charges Allowed",
+   "description": "Off: outlets, laundry and minibar cannot post to this room; the guest settles at the outlet."
+  },
+  {
+   "fieldname": "checkin_steps",
+   "fieldtype": "Long Text",
+   "label": "Check-in Steps",
+   "hidden": 1,
+   "read_only": 1,
+   "description": "Who did each guided check-in step and when (JSON)."
+  },
+  {
    "fieldname": "sb_money",
    "fieldtype": "Section Break",
    "label": "Money"
@@ -328,7 +424,7 @@
    "fieldname": "company",
    "fieldtype": "Link",
    "label": "Company",
-   "options": "Company"
+   "options": "Corporate Account"
   },
   {
    "fieldname": "group_booking",
@@ -365,6 +461,14 @@
    "fieldname": "auto_price",
    "fieldtype": "Check",
    "label": "Auto Price"
+  },
+  {
+   "depends_on": "auto_price",
+   "description": "A nightly room rate the desk agreed (Revenue Manager / Hotel Admin). Replaces the rate card, demand premium and rate plan; taxes still apply.",
+   "fieldname": "agreed_rate",
+   "fieldtype": "Currency",
+   "label": "Agreed Nightly Rate",
+   "read_only": 1
   },
   {
    "default": "0",
@@ -483,6 +587,13 @@
    "label": "Guest ETA"
   },
   {
+   "default": "0",
+   "description": "Guest is arriving late. The night audit holds a late arrival as Due In instead of marking it a no-show, and the next audit decides if they still have not arrived.",
+   "fieldname": "late_arrival",
+   "fieldtype": "Check",
+   "label": "Late Arrival"
+  },
+  {
    "fieldname": "travel_agent",
    "fieldtype": "Link",
    "label": "Travel Agent",
@@ -529,14 +640,14 @@
    "label": "Occupants"
   },
   {
-   "description": "Everyone staying in the room \u2014 the legal hotel register. Printed on the GRC.",
+   "description": "Everyone staying in the room — the legal hotel register. Printed on the GRC.",
    "fieldname": "occupants",
    "fieldtype": "Table",
    "label": "Occupants",
    "options": "Stay Occupant"
   },
   {
-   "description": "Extras chosen at booking \u2014 posted to the guest folio when it opens.",
+   "description": "Extras chosen at booking — posted to the guest folio when it opens.",
    "fieldname": "addons",
    "fieldtype": "Table",
    "label": "Add-ons",
@@ -599,6 +710,22 @@
    "label": "Quote Snapshot",
    "options": "JSON",
    "read_only": 1
+  },
+  {
+   "description": "The room rate confirmed for each night at booking. The folio bills these rates; later rate or season changes do not alter them. An amendment re-quotes them after the desk confirms the new price.",
+   "fieldname": "night_rates",
+   "fieldtype": "Table",
+   "label": "Confirmed Night Rates",
+   "options": "Reservation Night Rate",
+   "read_only": 1
+  },
+  {
+   "fieldname": "rate_lock_key",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Rate Lock Key",
+   "read_only": 1,
+   "no_copy": 1
   },
   {
    "default": "0",
@@ -695,6 +822,31 @@
    "label": "Extra Beds"
   },
   {
+   "fieldname": "over_capacity_guests",
+   "fieldtype": "Int",
+   "label": "Extra Guests By Arrangement",
+   "description": "How many guests above the room type's capacity this booking carries."
+  },
+  {
+   "fieldname": "over_capacity_charge",
+   "fieldtype": "Currency",
+   "label": "Extra Guest Charge / Night",
+   "description": "The amount agreed for those guests, per night. Posts to the folio with the room charge."
+  },
+  {
+   "fieldname": "over_capacity_reason",
+   "fieldtype": "Small Text",
+   "label": "Over-capacity Reason",
+   "description": "Required to book above the room type's capacity. Allowed only up to the extra beds the room type permits."
+  },
+  {
+   "default": "0",
+   "description": "Pets travelling with the party. Priced from the property's pet charge.",
+   "fieldname": "pets",
+   "fieldtype": "Int",
+   "label": "Pets"
+  },
+  {
    "fieldname": "infants",
    "fieldtype": "Int",
    "label": "Infants"
@@ -733,7 +885,7 @@
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-07-04 21:10:50.146134",
+ "modified": "2026-10-25 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Kamra",
  "name": "Reservation",
@@ -801,6 +953,19 @@
    "report": 1,
    "role": "Kamra Agent",
    "write": 1
+  },
+  {
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Housekeeping Supervisor"
+  },
+  {
+   "read": 1,
+   "report": 1,
+   "print": 1,
+   "role": "Night Auditor"
   }
  ],
  "row_format": "Dynamic",

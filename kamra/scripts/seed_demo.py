@@ -11,7 +11,7 @@ To wipe a public playground and rebuild from scratch, use
 import random
 
 import frappe
-from frappe.utils import add_days, nowdate
+from frappe.utils import add_days, date_diff, nowdate
 
 PROPERTY = "Kamra Demo Palace"
 
@@ -36,17 +36,35 @@ GUESTS = [
 
 
 def execute():
+	# Document.insert skips doctype defaults while in_import is on (the
+	# demo reset sets it for its wipe). Seed rows must get their defaults
+	# - room status, folio type, check-in time, GST rates, booking engine.
+	was_importing = frappe.flags.in_import
+	frappe.flags.in_import = False
+	try:
+		return _execute()
+	finally:
+		frappe.flags.in_import = was_importing
+
+
+def _execute():
 	from kamra.scripts.seed_users import ensure_users
 
 	# Mark this as a demo site so the login screen shows the demo accounts.
 	frappe.db.set_default("kamra_demo_mode", "1")
 	if frappe.db.exists("Property", PROPERTY):
+		# first, while the defaults-skipped signature is still intact
+		healed = heal_seed_defaults()
 		ensure_users()
 		from kamra.scripts.seed_showcase import execute as seed_showcase
+		from kamra.scripts.seed_v1 import execute as seed_v1
 		seed_showcase()
+		seed_v1()
 		seed_generic_properties()
+		ensure_petty_cash_floats()
 		frappe.db.commit()  # nosemgrep: frappe-manual-commit -- batch/seed/migration script runs outside the request cycle; explicit commit persists the staged writes
-		print("Demo property already exists — ensured demo users + showcase.")
+		print("Demo property already exists — ensured demo users + showcase + revenue samples."
+		      + (f" Healed {healed} blank default(s)." if healed else ""))
 		return
 
 	random.seed(8)  # reproducible demo
@@ -60,6 +78,7 @@ def execute():
 			"phone": "+91 80 4000 8000",
 			"email": "demo@kamra.local",
 			"gstin": "29ABCDE1234F1Z5",
+			"petty_cash_float": 10000,
 		}
 	).insert(ignore_permissions=True)
 
@@ -151,6 +170,10 @@ def execute():
 				"amount_before_tax": 0,
 			}
 		)
+		# in-house and departing stays started before today: historical
+		# seed rows, the case the past-check-in guard exempts by flag
+		if date_diff(today, ci) > 0:
+			doc.flags.allow_past_check_in = True
 		doc.insert(ignore_permissions=True)
 		if status != "Confirmed":
 			doc.status = status
@@ -209,19 +232,83 @@ def execute():
 	from kamra.scripts.seed_showcase import execute as seed_showcase
 	seed_showcase()
 
+	# seasons, guardrails, vouchers, meal plans, extra rate plans
+	from kamra.scripts.seed_v1 import execute as seed_v1
+	seed_v1()
+
 	# Seed generic demo properties (lakeside villa with whole-property lock, and beach homestay with AC/non-AC rooms)
 	seed_generic_properties()
+	ensure_petty_cash_floats()
 
 	frappe.db.commit()  # nosemgrep: frappe-manual-commit -- batch/seed/migration script runs outside the request cycle; explicit commit persists the staged writes
 	print(f"Seeded demo property '{PROPERTY}' with rooms, guests, reservations and login users.")
+
+
+RENTALS = ("Kamra Lakeside Villa", "Kamra Beach Homestay")
+
+
+def _insert_rental_property(fields: dict):
+	"""A villa / homestay is a Short Term Rental with its booking page
+	live - the same preset setup_property applies at creation."""
+	from kamra.property_presets import KIND_STR, apply_kind_defaults
+	from kamra.turnover import ensure_default_profile
+
+	fields = apply_kind_defaults({
+		**fields, "property_kind": KIND_STR, "booking_engine_enabled": 1,
+	})
+	prop = frappe.get_doc({"doctype": "Property", **fields}).insert(ignore_permissions=True)
+	ensure_default_profile(prop.name, str_defaults=True)
+	return prop
+
+
+def _ensure_rental_kind():
+	"""Heal demo sites seeded before the villa / homestay were rentals:
+	switch the kind (Property.validate applies the STR preset to empty
+	fields) and turn the booking engine on."""
+	from kamra.property_presets import KIND_STR
+
+	for name in RENTALS:
+		if not frappe.db.exists("Property", name):
+			continue
+		doc = frappe.get_doc("Property", name)
+		dirty = False
+		if doc.property_kind != KIND_STR:
+			doc.property_kind = KIND_STR
+			dirty = True
+		if not doc.booking_engine_enabled:
+			doc.booking_engine_enabled = 1
+			dirty = True
+		mods = [m.strip() for m in (doc.enabled_modules or "").split(",") if m.strip()]
+		if mods and "booking-engine" not in mods:
+			doc.enabled_modules = ",".join(sorted(set(mods) | {"booking-engine"}))
+			dirty = True
+		if dirty:
+			doc.save(ignore_permissions=True)
+
+
+
+def ensure_petty_cash_floats():
+	"""Each property keeps its own petty-cash imprest — never one shared box."""
+	defaults = {
+		"Kamra Demo Palace": 10000,
+		"Kamra Beach House": 3000,
+		"Kamra Lakeside Villa": 5000,
+		"Kamra Beach Homestay": 2500,
+	}
+	for name, amount in defaults.items():
+		if not frappe.db.exists("Property", name):
+			continue
+		cur = frappe.db.get_value("Property", name, "petty_cash_float")
+		if cur in (None, "", 0, 0.0):
+			frappe.db.set_value("Property", name, "petty_cash_float", amount,
+			                    update_modified=False)
 
 
 def seed_generic_properties():
 	# 1. Seed Kamra Lakeside Villa (Generic Tatasth structure)
 	p1 = "Kamra Lakeside Villa"
 	if not frappe.db.exists("Property", p1):
-		prop = frappe.get_doc({
-			"doctype": "Property",
+		prop = _insert_rental_property({
 			"property_name": p1,
 			"city": "Bengaluru",
 			"state": "Karnataka",
@@ -232,8 +319,8 @@ def seed_generic_properties():
 			"booking_payment_mode": "Advance percent",
 			"advance_percent": 100,
 			"security_deposit_amount": 5000,
-		}).insert(ignore_permissions=True)
-		
+		})
+
 		rt_std = frappe.get_doc({
 			"doctype": "Room Type",
 			"property": prop.name,
@@ -249,7 +336,7 @@ def seed_generic_properties():
 			"children_capacity": 1,
 			"max_total_occupants": 3,
 		}).insert(ignore_permissions=True)
-		
+
 		rt_villa = frappe.get_doc({
 			"doctype": "Room Type",
 			"property": prop.name,
@@ -265,7 +352,7 @@ def seed_generic_properties():
 			"children_capacity": 5,
 			"max_total_occupants": 15,
 		}).insert(ignore_permissions=True)
-		
+
 		# Tatasth physical rooms (Ground Floor & First Floor)
 		for i in range(1, 6):
 			floor = "Ground Floor" if i <= 3 else "First Floor"
@@ -276,7 +363,7 @@ def seed_generic_properties():
 				"room_type": rt_std.name,
 				"floor": floor
 			}).insert(ignore_permissions=True)
-			
+
 		from kamra.api import set_room_rate
 		set_room_rate(prop.name, rt_std.name, "2026-08-01", "2027-08-01", 8600, reason="Weekend Rate", days_of_week=["Fri", "Sat"])
 		set_room_rate(prop.name, rt_villa.name, "2026-08-01", "2027-08-01", 36800, reason="Weekend Rate", days_of_week=["Fri", "Sat"])
@@ -285,8 +372,7 @@ def seed_generic_properties():
 	# 2. Seed Kamra Beach Homestay (Generic Waterfront structure)
 	p2 = "Kamra Beach Homestay"
 	if not frappe.db.exists("Property", p2):
-		prop = frappe.get_doc({
-			"doctype": "Property",
+		prop = _insert_rental_property({
 			"property_name": p2,
 			"city": "Bengaluru",
 			"state": "Karnataka",
@@ -297,36 +383,36 @@ def seed_generic_properties():
 			"booking_payment_mode": "Advance percent",
 			"advance_percent": 100,
 			"security_deposit_amount": 5000,
-		}).insert(ignore_permissions=True)
-		
+		})
+
 		rt_tfac = frappe.get_doc({
 			"doctype": "Room Type", "property": prop.name,
 			"room_type_code": "TFAC", "room_type_name": "Top Floor AC",
 			"room_category": "Private", "base_price": 4000, "base_occupancy": 2,
 			"adults_capacity": 2, "children_capacity": 1, "max_total_occupants": 3
 		}).insert(ignore_permissions=True)
-		
+
 		rt_uf2r = frappe.get_doc({
 			"doctype": "Room Type", "property": prop.name,
 			"room_type_code": "UF2R", "room_type_name": "Upper Floor (2-room)",
 			"room_category": "Private", "base_price": 6000, "base_occupancy": 4,
 			"adults_capacity": 4, "children_capacity": 2, "max_total_occupants": 6
 		}).insert(ignore_permissions=True)
-		
+
 		rt_gfna = frappe.get_doc({
 			"doctype": "Room Type", "property": prop.name,
 			"room_type_code": "GFNA", "room_type_name": "Ground Floor Non-AC – Room A",
 			"room_category": "Private", "base_price": 2700, "base_occupancy": 2,
 			"adults_capacity": 2, "children_capacity": 1, "max_total_occupants": 3
 		}).insert(ignore_permissions=True)
-		
+
 		rt_gfnb = frappe.get_doc({
 			"doctype": "Room Type", "property": prop.name,
 			"room_type_code": "GFNB", "room_type_name": "Ground Floor Non-AC – Room B",
 			"room_category": "Private", "base_price": 3100, "base_occupancy": 2,
 			"adults_capacity": 2, "children_capacity": 1, "max_total_occupants": 3
 		}).insert(ignore_permissions=True)
-		
+
 		# Physical Rooms (Top Floor, Upper Floor, Ground Floor)
 		frappe.get_doc({"doctype": "Room", "property": prop.name, "room_number": "Room 1", "room_type": rt_tfac.name, "floor": "Top Floor"}).insert(ignore_permissions=True)
 		frappe.get_doc({"doctype": "Room", "property": prop.name, "room_number": "Room 2", "room_type": rt_uf2r.name, "floor": "Upper Floor"}).insert(ignore_permissions=True)
@@ -334,3 +420,92 @@ def seed_generic_properties():
 		frappe.get_doc({"doctype": "Room", "property": prop.name, "room_number": "Room 4", "room_type": rt_gfna.name, "floor": "Ground Floor"}).insert(ignore_permissions=True)
 		frappe.get_doc({"doctype": "Room", "property": prop.name, "room_number": "Room 5", "room_type": rt_gfnb.name, "floor": "Ground Floor"}).insert(ignore_permissions=True)
 		print("Seeded generic Kamra Beach Homestay.")
+
+	_ensure_rental_kind()
+
+
+# --- heal rows a defaults-skipped reset left blank ---------------------------
+
+DEMO_PROPERTIES = (PROPERTY, *RENTALS)
+_NUMERIC = {"Int", "Float", "Currency", "Percent", "Check", "Rating", "Duration"}
+_TEMPORAL = {"Date", "Datetime", "Time"}
+_SKIP_TYPES = {"Table", "Table MultiSelect", "Section Break", "Column Break",
+               "Tab Break", "HTML", "Button", "Heading", "Fold"}
+
+
+def _static_default(df):
+	d = df.default
+	if d in (None, ""):
+		return None
+	d = str(d)
+	if d.startswith((":", "eval:", "__")) or d.lower() in ("today", "now") or "{" in d:
+		return None
+	if df.fieldtype in _NUMERIC:
+		try:
+			return float(d) if "." in d else int(d)
+		except ValueError:
+			return None
+	return d
+
+
+def _defaults_were_skipped(prop: str) -> bool:
+	"""A Property inserted with in_import on carries no defaults: its hold
+	window and GST slab are all zero. Settings can't save that (the hold
+	window has a 5-minute floor), so a real property never matches."""
+	row = frappe.db.get_value(
+		"Property", prop,
+		["hold_minutes", "gst_slab_threshold", "gst_rate_low", "gst_rate_high"],
+		as_dict=True)
+	return bool(row) and not any(row.values())
+
+
+def heal_seed_defaults(properties=DEMO_PROPERTIES) -> int:
+	"""Fill doctype defaults on demo rows that an earlier reset seeded
+	without them (frappe.flags.in_import left on). Only touches demo
+	properties that show the defaults-skipped signature, and only fields
+	that are still blank / zero while their default is not, so values set
+	since are kept. Child tables and doctypes without a property link
+	(Guest, ...) are left alone.
+
+	Bench: bench --site <demo> execute kamra.scripts.seed_demo.heal_seed_defaults
+	"""
+	targets = [p for p in properties
+	           if frappe.db.exists("Property", p) and _defaults_were_skipped(p)]
+	if not targets:
+		return 0
+	doctypes = ["Property"] + frappe.get_all(
+		"DocType", filters={"module": "Kamra", "istable": 0, "issingle": 0,
+		                    "name": ("!=", "Property")}, pluck="name")
+	healed = 0
+	for dt in doctypes:
+		if not frappe.db.table_exists(dt):
+			continue
+		meta = frappe.get_meta(dt)
+		if dt == "Property":
+			key = "name"
+		elif meta.has_field("property") and frappe.db.has_column(dt, "property"):
+			key = "property"
+		else:
+			continue
+		for df in meta.fields:
+			if df.fieldtype in _SKIP_TYPES or df.fieldname == "naming_series":
+				continue
+			val = _static_default(df)
+			if val is None or (df.fieldtype in _NUMERIC and not val):
+				continue
+			if not frappe.db.has_column(dt, df.fieldname):
+				continue
+			col = f"`{df.fieldname}`"
+			if df.fieldtype in _NUMERIC:
+				blank = f"ifnull({col}, 0) = 0"
+			elif df.fieldtype in _TEMPORAL:
+				blank = f"{col} is null"
+			else:
+				blank = f"ifnull({col}, '') = ''"
+			for prop in targets:
+				frappe.db.sql(  # nosemgrep: frappe-sql-format-injection -- doctype and fieldnames come from DocType meta, not user input; values are bound
+					f"update `tab{dt}` set {col} = %s where `{key}` = %s and {blank}",
+					(val, prop))
+				healed += frappe.db._cursor.rowcount if getattr(frappe.db, "_cursor", None) else 0
+	frappe.clear_cache()
+	return healed

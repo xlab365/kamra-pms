@@ -1,7 +1,7 @@
 # Channel manager (OTA sync)
 
-Kamra syncs availability and rates to the OTAs — and receives their
-bookings — through a channel manager. The integration is a provider
+Kamra syncs availability and rates to the OTAs - and receives their
+bookings - through a channel manager. The integration is a provider
 seam: adapters ship for **Channex.io** (usable today, self-serve),
 **STAAH** and **AioSell** (ready; they activate with the credentials
 those companies issue to connectivity partners).
@@ -9,7 +9,7 @@ those companies issue to connectivity partners).
 ## Recommended: Channex.io, bring your own account
 
 [Channex.io](https://channex.io) is API-first channel-manager
-infrastructure — self-serve signup, per-property pricing paid directly
+infrastructure - self-serve signup, per-property pricing paid directly
 to them, certified with Booking.com, Agoda, Expedia, Airbnb and more.
 
 1. Create a Channex account, add your property and rooms, connect your
@@ -17,20 +17,30 @@ to them, certified with Booking.com, Agoda, Expedia, Airbnb and more.
 2. In Kamra: *Revenue → Channel Manager → New*: provider **Channex**,
    your Channex **user API key**, the Channex **property id**, and a
    **webhook secret** you invent. Tick Active.
-3. *Revenue → OTA Room Mappings*: one row per room type — your room
-   type against the Channex `room_type_id` and `rate_plan_id`.
+
+   ![The New Channel Manager form with provider Channex, the API key, the Channex property ID, a webhook secret and 90 days to push](/img/channel-manager/new-connection.png)
+
+3. *Revenue → OTA Room Mappings*: one row per room type - your room
+   type against the Channex `room_type_id` and `rate_plan_id`. The
+   **Connection** and **Room type** lists only show the property you are
+   working in. Kamra refuses a mapping whose room type belongs to another
+   property than the connection.
+
+   ![The New OTA Room Mapping form: the connection, a room type and the Channex room and rate plan IDs](/img/channel-manager/room-mapping.png)
+
 4. In Channex, register a **booking webhook** pointing at
    `https://YOUR-SITE/api/method/kamra.channel_manager.webhook?connection=CMC-XXXXX`
-   (the exact URL shows on the connection row), sending your secret in
-   the `X-Webhook-Secret` header.
+   sending your secret in the `X-Webhook-Secret` header. `CMC-XXXXX` is
+   the connection's ID: it's the value you picked in the **Connection**
+   field of the room mapping in step 3 (for example `CMC-00001`).
 
 That's the whole setup. From then on:
 
-- **Availability and rates push automatically** — every hour, and again
+- **Availability and rates push automatically** - every hour, and again
   right after any booking lands (from any source), so an OTA can't
   oversell a room the front desk just gave away. Rates come from the
   pricing engine with demand premiums and hurdle floors applied.
-- **OTA bookings arrive as reservations** — source OTA, the channel's
+- **OTA bookings arrive as reservations** - source OTA, the channel's
   name and booking reference kept, the guest matched by phone/email or
   created, the OTA's sell price preserved (never re-priced), and the
   same capacity and double-booking rules a front-desk booking obeys.
@@ -52,5 +62,5 @@ certification.
 ## Is any of this gated?
 
 No. The integrations are open source like everything else. You pay the
-channel manager directly for their service; on Kamra Cloud we can
-bundle and manage it for you as a connected service.
+channel manager directly for their service; with an
+[implementation](https://kamrapms.com/implementation/) we can set it up for you.

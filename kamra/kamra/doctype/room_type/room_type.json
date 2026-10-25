@@ -31,11 +31,16 @@
   "extra_adult_price",
   "extra_bed_price",
   "max_extra_beds",
+  "small_group_max_adults",
+  "small_group_price_per_adult",
+  "small_group_days",
+  "small_group_whole_stay",
   "sb_children",
   "free_child_age",
   "child_age_limit",
   "column_break_ch",
   "child_price",
+  "children_within_base_occupancy",
   "tax_percent",
   "sb_capacity",
   "adults_capacity",
@@ -155,7 +160,7 @@
    "fieldname": "base_price",
    "fieldtype": "Currency",
    "in_list_view": 1,
-   "label": "Base Price",
+   "label": "Base Price (BAR)",
    "reqd": 1
   },
   {
@@ -195,6 +200,32 @@
    "label": "Max Extra Beds"
   },
   {
+   "fieldname": "small_group_max_adults",
+   "fieldtype": "Int",
+   "label": "Small-group Threshold (adults)",
+   "description": "Below this many adults, price per person instead of the house rate. 0 = off."
+  },
+  {
+   "fieldname": "small_group_price_per_adult",
+   "fieldtype": "Currency",
+   "label": "Small-group Price Per Adult",
+   "depends_on": "eval:doc.small_group_max_adults > 0"
+  },
+  {
+   "fieldname": "small_group_days",
+   "fieldtype": "Data",
+   "label": "Small-group Days",
+   "description": "Days this rate applies, e.g. sun,mon,tue,wed,thu. Blank = every day.",
+   "depends_on": "eval:doc.small_group_max_adults > 0"
+  },
+  {
+   "fieldname": "small_group_whole_stay",
+   "fieldtype": "Check",
+   "label": "Small-group Rate Needs The Whole Stay",
+   "depends_on": "eval:doc.small_group_max_adults > 0",
+   "description": "On: the per-person rate applies only when every night of the stay falls on a small-group day, so a stay touching a weekend is charged at the house rate throughout."
+  },
+  {
    "fieldname": "sb_children",
    "fieldtype": "Section Break",
    "label": "Children Policy"
@@ -223,6 +254,12 @@
    "fieldname": "child_price",
    "fieldtype": "Currency",
    "label": "Child Price"
+  },
+  {
+   "fieldname": "children_within_base_occupancy",
+   "fieldtype": "Check",
+   "label": "Children Count Towards Base Occupancy",
+   "description": "On: children fill the base occupancy alongside adults, and only guests beyond it are charged. Off (default): every child is charged, whatever the party size."
   },
   {
    "fieldname": "tax_percent",
@@ -338,7 +375,7 @@
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-07-04 19:26:35.766617",
+ "modified": "2026-09-28 12:51:22.820746",
  "modified_by": "Administrator",
  "module": "Kamra",
  "name": "Room Type",
@@ -397,6 +434,19 @@
    "read": 1,
    "report": 1,
    "role": "Kamra Agent"
+  },
+  {
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Housekeeping Supervisor"
+  },
+  {
+   "read": 1,
+   "report": 1,
+   "print": 1,
+   "role": "Night Auditor"
   }
  ],
  "row_format": "Dynamic",

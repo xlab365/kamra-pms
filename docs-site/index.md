@@ -3,53 +3,89 @@ layout: home
 
 hero:
   name: Kamra
-  text: The open-source PMS for hotels and villas
-  tagline: Front desk, billing & GST, POS, housekeeping, direct bookings and short-term rentals — 100% open source, AI-ready, no per-room fees. This is the manual.
+  text: The hotel PMS agents can actually run
+  tagline: Open-source PMS with a governed MCP layer - Claude (or any agent) quotes, books and posts charges as a permission-checked user. Prices stay in code. Every action is audited.
   image:
     src: /kamra-mark.svg
     alt: Kamra
   actions:
     - theme: brand
-      text: Quickstart (Docker)
-      link: /quickstart
+      text: Connect Claude (MCP)
+      link: /ai-and-mcp
     - theme: alt
-      text: Try the live demo
-      link: https://demo.kamrapms.com
+      text: MCP tool reference
+      link: /mcp-tools
     - theme: alt
-      text: GitHub
-      link: https://github.com/Kamra-PMS/kamra-pms
+      text: API · Postman
+      link: /developers
+    - theme: alt
+      text: Live demo
+      link: /demo
 
 features:
-  - title: Self-host in an afternoon
-    details: Runs on a ₹549/month VPS (2 vCPU · 4 GB). Step-by-step guides for Hostinger, DigitalOcean, Linode and AWS.
-    link: /self-hosting/
-  - title: Connect your AI over MCP
-    details: 52 governed tools. Click Connect Claude — it quotes, books and posts charges as a permission-checked user, fully audited.
+  - title: MCP is the product edge
+    details: 100+ governed tools on /mcp. Same whitelist as the desk. Role-scoped, module-gated, fully logged. The model never invents a rate.
     link: /ai-and-mcp
-  - title: Everything included, always
-    details: No feature gates, no editions, no per-room pricing. The same complete system whether you self-host or use Kamra Cloud.
-    link: /faq
+  - title: Every MCP tool
+    details: Name, arguments and endpoint for the full tool registry - regenerated from code on every docs build.
+    link: /mcp-tools
+  - title: How Kamra works
+    details: One write path for UI, REST and agents. Architecture diagrams, stay lifecycle and money rules.
+    link: /how-it-works
+  - title: REST API & Postman
+    details: Call the same methods from your stack. Download the Postman collection and go.
+    link: /developers
+  - title: Features & latest release
+    details: Front desk through banquets, F&B, WhatsApp and country tax packs - plus what's new in v2.6.20.
+    link: /features
+  - title: Install
+    details: Docker on a VPS, classic bench, or the Frappe Cloud Marketplace. Same complete AGPL app.
+    link: /self-hosting/
 ---
 
-## What is Kamra?
+## What makes Kamra different
 
-::: tip New — short-term rentals
-Kamra 2.5 runs villa portfolios as well as hotels. [Read the announcement](https://kamrapms.com/updates/short-term-rentals/) · try the [demo booking page](https://demo.kamrapms.com/book).
-:::
+Most hotel software bolts a chatbot onto a closed SaaS. **Kamra is built
+so an agent and a receptionist share one governed write path.**
 
-Kamra is a complete property-management system for hotels and short-term
-rentals, built on
-[Frappe](https://frappeframework.com) and released under AGPL-3.0:
+1. **MCP first.** Connect Claude (or any MCP client) to `/mcp`. Tools are
+   filtered by the signed-in user's roles and the property's enabled
+   modules.
+2. **Deterministic money.** Quotes, taxes, availability and cancellation
+   fees come from `pricing.py` and the folio ledger - never from the
+   model. Guardrails refuse out-of-range rates.
+3. **Full audit.** Every mutating tool call lands in the Activity Log
+   with who / what / why.
+4. **Same APIs for everyone.** Desk UI, REST, MCP and the in-app Kamra
+   Agent call the same `@frappe.whitelist` functions. No second writer.
 
-- **Front desk** — tape chart, arrivals, group bookings, room blocks, waitlists, self check-in
-- **Money** — folios with per-line GST, split/route billing, night audit, GST invoices, GSTR-1 export
-- **F&B** — restaurant POS, live kitchen display, guest QR ordering, room posting
-- **Housekeeping** — a phone app for floor staff with task assignment, SLA escalation, lost & found
-- **Direct bookings** — a public booking page with live rates, check-in / check-out, and Check availability
-- **Short-term rentals** — villa catalogs, per-site maps, room-wise or entire-place selling, deposits
-- **Multi-property** — one login, shared guest profiles, central reservations, portfolio dashboard
-- **AI-native** — an MCP server and a BYO-key copilot over one governed, audited tool layer
+Start here: **[Connect your AI (MCP)](/ai-and-mcp)** ·
+**[MCP tool reference](/mcp-tools)** ·
+**[How Kamra works](/how-it-works)** ·
+**[Developer shortcuts](/developers)**
 
-New here? Start with the [Quickstart](/quickstart), or poke around the
-[live demo](https://demo.kamrapms.com) first — it's seeded with a full
-sample hotel and one-tap role logins.
+**Current stable:** [v2.6.20](/releases) ·
+[Live demo](https://demo.kamrapms.com) ·
+[Frappe Cloud Marketplace](https://frappecloud.com/marketplace/apps/kamra)
+
+![Kamra's Today screen: arrivals, departures, the room board and in-house guests](/img/front-desk/today.png)
+
+## Where to start
+
+- **You want the AI story:** [Connect your AI](/ai-and-mcp), then the
+  [MCP tool reference](/mcp-tools). Architecture and the one write path:
+  [How Kamra works](/how-it-works).
+- **You're integrating:** [API, MCP & Postman](/developers) - REST basics,
+  full [API reference](/api-reference),
+  [Postman collection ↓](https://kamrapms.com/docs/kamra.postman_collection.json).
+- **You run the hotel:** [Guides by role](/user-guide) and the module
+  guides in the side bar.
+- **You're installing:** [Quickstart](/quickstart),
+  [Self-hosting](/self-hosting/), or
+  [Frappe Cloud](/self-hosting/frappe-cloud).
+
+**Quick links:** [Connect MCP](/ai-and-mcp) · [MCP tools](/mcp-tools) ·
+[API basics](/api) · [API reference](/api-reference) ·
+[Postman ↓](https://kamrapms.com/docs/kamra.postman_collection.json) ·
+[What's new](/releases) ·
+[changelog](https://github.com/Kamra-PMS/kamra-pms/blob/main/CHANGELOG.md)

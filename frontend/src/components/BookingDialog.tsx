@@ -1,18 +1,43 @@
+import { RateOptions } from "./RateOptions"
 import { useEffect, useState } from "react"
-import { ChevronDown, Loader2, Megaphone, Plus, Star, Trash2, X } from "lucide-react"
+import { htmlToText } from "../lib/utils"
+import { useNavigate } from "react-router-dom"
+import { ChevronDown, Loader2, Megaphone, Plus, ShieldAlert, Star, Trash2, X } from "lucide-react"
 import {
   call,
   createBooking,
   getBookingOptions,
   getCurrentProperty,
   getQuote,
+  guestAlert,
   guestSearch,
   type BookingOptions,
+  type GuestAlert,
   type GuestHit,
   type Quote,
 } from "../lib/api"
 import { Button } from "./ui/button"
-import { cur, moneyLocale } from "../lib/money"
+import { cur, moneyLocale, useLocale } from "../lib/money"
+import { isPhoneComplete } from "../lib/phone"
+import PhoneInput from "./PhoneInput"
+import { clampGuests, sleeps } from "../lib/occupancy"
+import { useT, t as translate, useUILanguage } from "../lib/i18n"
+import { petChargeBasis } from "../lib/pets"
+import { useCashierAuth } from "../lib/cashierAuth"
+import DepositPanel, { type DepositState } from "./DepositPanel"
+import CheckInDialog from "./CheckInDialog"
+import TillCard, { useTill } from "./TillCard"
+
+
+interface CompanyCredit {
+  applies: boolean
+  ok: boolean
+  blocked?: boolean
+  policy: string
+  company?: string
+  reasons: string[]
+  can_override?: boolean
+}
 
 interface ExtraRoom {
   room_type: string
@@ -25,11 +50,13 @@ const inputCls =
   "w-full rounded-lg border border-zinc-300 bg-white px-3.5 py-2.5 text-base " +
   "focus:outline-2 focus:outline-offset-1 focus:outline-brand-600"
 
+
 function Field(props: { label: string; children: React.ReactNode }) {
+  useUILanguage()
   return (
     <label className="block">
       <span className="mb-1.5 block text-sm font-medium text-zinc-600">
-        {props.label}
+        {translate(props.label)}
       </span>
       {props.children}
     </label>
@@ -37,21 +64,49 @@ function Field(props: { label: string; children: React.ReactNode }) {
 }
 
 
+interface FreeRoom {
+  name: string
+  room_number: string
+  housekeeping_status?: string
+}
+
+interface WalkInResult {
+  reservation: string
+  room: string
+  room_number: string
+  folio: string | null
+  paid?: number
+  amount_after_tax?: number
+  /** 0: booked and room assigned, check-in still to finish (defer_check_in) */
+  checked_in?: 0 | 1
+}
+
+function todayLocal() {
+  const d = new Date()
+  const m = `${d.getMonth() + 1}`.padStart(2, "0")
+  const day = `${d.getDate()}`.padStart(2, "0")
+  return `${d.getFullYear()}-${m}-${day}`
+}
+
 const inr = (n: number) =>
   n.toLocaleString(moneyLocale(), { maximumFractionDigits: 0 })
 
 export function BookingDialog(props: {
   initial: {
     room_type?: string
+    room?: string
+    room_number?: string
     date?: string
     guest?: string
     guest_name?: string
     phone?: string
     stays?: number
+    walkIn?: boolean
   }
   onClose: () => void
   onBooked: () => void
 }) {
+  const { t, tn } = useT()
   const [options, setOptions] = useState<BookingOptions | null>(null)
   const [quote, setQuote] = useState<Quote | null>(null)
   const [quoting, setQuoting] = useState(false)
@@ -61,9 +116,15 @@ export function BookingDialog(props: {
     ref: string
     room: string | null
     waitlist?: boolean
+    walkIn?: WalkInResult
+    /** a single booking: take the deposit right here (#114) */
+    deposit?: DepositState
   } | null>(
     null,
   )
+  /** a deferred walk-in: the guided check-in is open for it */
+  const [guidedCheckIn, setGuidedCheckIn] = useState<string | null>(null)
+  const [walkInCheckedIn, setWalkInCheckedIn] = useState(false)
 
   const [form, setForm] = useState({
     guest_name: props.initial.guest_name ?? "",
@@ -74,7 +135,13 @@ export function BookingDialog(props: {
     adults: 2,
     children: 0,
     meal_plan: "",
+    // "" = no plan picked: the company's negotiated plan applies, if any
+    rate_plan: "",
     voucher_code: "",
+    over_capacity_reason: "",
+    over_capacity_guests: 0,
+    over_capacity_charge: 0,
+    pets: 0,
     company: "",
     travel_agent: "",
     booked_by_name: "",
@@ -83,6 +150,14 @@ export function BookingDialog(props: {
     contact_preference: "Booker",
   })
   const [onBehalf, setOnBehalf] = useState(false)
+  // Day use (hourly): check in and out the same day, inside a time slot.
+  // The server prices it (one billable date) - the quote shows that rate.
+  const [dayUse, setDayUse] = useState(false)
+  const [slot, setSlot] = useState({ from: "10:00", to: "18:00" })
+  const badSlot = dayUse && (!slot.from || !slot.to || slot.to <= slot.from)
+  const slotArgs = dayUse
+    ? { check_in_time: slot.from, check_out_time: slot.to }
+    : {}
   const [moreOpen, setMoreOpen] = useState(false)
   const [moreRooms, setMoreRooms] = useState<ExtraRoom[]>([])
   const [moreQuotes, setMoreQuotes] = useState<(Quote | null)[]>([])
@@ -119,6 +194,80 @@ export function BookingDialog(props: {
       : null,
   )
   const [hits, setHits] = useState<GuestHit[]>([])
+  // blacklist check for the profile this booking will attach to - asked of
+  // the server (picked profile, else the phone match create_booking uses)
+  const [alert, setAlert] = useState<GuestAlert | null>(null)
+  const [blAck, setBlAck] = useState(false)
+  const [blReason, setBlReason] = useState("")
+  // company credit control (#238): the same check create_booking runs,
+  // asked up front so the desk sees a warning or a block before booking
+  const [credit, setCredit] = useState<CompanyCredit | null>(null)
+  const [creditReason, setCreditReason] = useState("")
+  const creditAmount = quote?.amount_after_tax ?? 0
+  useEffect(() => {
+    if (!form.company) {
+      setCredit(null)
+      return
+    }
+    let live = true
+    const timer = setTimeout(() => {
+      call<CompanyCredit>("kamra.credit.company_credit_status", {
+        company: form.company,
+        property: getCurrentProperty(),
+        amount: creditAmount,
+      })
+        .then((c) => live && setCredit(c))
+        .catch(() => live && setCredit(null))
+    }, 300)
+    return () => {
+      live = false
+      clearTimeout(timer)
+    }
+  }, [form.company, creditAmount])
+
+  // Walk-in: book + ID + room + payment + check-in on this one screen
+  // (issue #97). Arrival is always today, one room, no waitlist.
+  const navigate = useNavigate()
+  // ID documents and ways to pay come from the property's country pack
+  const loc = useLocale()
+  const { ensureUnlocked, status: pinStatus } = useCashierAuth()
+  const [walkIn, setWalkIn] = useState(!!props.initial.walkIn)
+  // the room clicked on the tape chart; dropped once the desk picks another type
+  const pinnedRoom = !!props.initial.room && !walkIn && form.room_type === props.initial.room_type
+  const [freeRooms, setFreeRooms] = useState<FreeRoom[] | null>(null)
+  const [walk, setWalk] = useState({
+    room: "",
+    id_type: "",
+    id_number: "",
+    nationality: "",
+    pay_mode: "Cash",
+    pay_amount: "",
+    pay_reference: "",
+  })
+  const setW = (k: keyof typeof walk, v: string) =>
+    setWalk((w) => ({ ...w, [k]: v }))
+  useEffect(() => {
+    setWalk((w) => ({
+      ...w,
+      pay_mode: loc.payment_modes.includes(w.pay_mode)
+        ? w.pay_mode
+        : (loc.payment_modes[0] ?? "Cash"),
+      nationality: w.nationality || loc.default_nationality,
+    }))
+  }, [loc])
+  // until the desk edits the amount, it tracks the live total
+  const [amountTouched, setAmountTouched] = useState(false)
+
+  function toggleWalkIn(on: boolean) {
+    setWalkIn(on)
+    setError(null)
+    if (on) {
+      setForm((f) => ({ ...f, check_in_date: todayLocal() }))
+      setMoreRooms([])
+      setAddonQty({})
+      setMoreOpen(false)
+    }
+  }
 
   // profile typeahead - find the returning guest before creating a dupe
   useEffect(() => {
@@ -132,6 +281,34 @@ export function BookingDialog(props: {
     )
     return () => clearTimeout(t)
   }, [form.guest_name, profile])
+
+  useEffect(() => {
+    const guest = profile?.name
+    const phone = form.phone && isPhoneComplete(form.phone, options?.property?.country)
+      ? form.phone
+      : ""
+    if (!guest && !phone) {
+      setAlert(null)
+      return
+    }
+    let live = true
+    const t = setTimeout(() => {
+      guestAlert({ guest: guest || undefined, phone: guest ? undefined : phone })
+        .then((a) => {
+          if (!live) return
+          setAlert(a)
+          if (!a.blacklisted) {
+            setBlAck(false)
+            setBlReason("")
+          }
+        })
+        .catch(() => live && setAlert(null))
+    }, 250)
+    return () => {
+      live = false
+      clearTimeout(t)
+    }
+  }, [profile?.name, form.phone, options?.property?.country])
 
   useEffect(() => {
     getBookingOptions().then((o) => {
@@ -151,11 +328,43 @@ export function BookingDialog(props: {
     }
   }, [])
 
+  // With no plan picked, a company's negotiated plan prices the stay - the
+  // server decides (pricing.negotiated_rate_plan); the quote says which.
+  const companyPlan =
+    form.company && !form.rate_plan && quote?.rate_plan
+      ? options?.rate_plans.find((rp) => rp.name === quote.rate_plan) ?? null
+      : null
+
   const checkOut = (() => {
+    if (dayUse) return form.check_in_date
     const d = new Date(form.check_in_date)
     d.setDate(d.getDate() + Math.max(0, form.nights))
     return d.toISOString().slice(0, 10)
   })()
+
+  // a new booking cannot start in the past - the input's `min` is advisory
+  // only (typed and pasted values bypass it), so gate the submit too
+  const pastCheckIn = form.check_in_date < todayLocal()
+
+  // a blacklisted guest needs an explicit, reasoned confirmation (Hotel
+  // Admin only - the server enforces it); a multi-room group can't override
+  const blacklisted = !!alert?.blacklisted
+  const blacklistBlocked =
+    blacklisted && (moreRooms.length > 0 || !blAck || !blReason.trim() || !alert?.can_override)
+  const blacklistOverride = blacklisted && blAck ? blReason.trim() || undefined : undefined
+
+  const creditFails = !!credit?.applies && !credit.ok
+  const creditBlocked =
+    creditFails && !!credit?.blocked &&
+    (moreRooms.length > 0 || !credit.can_override || !creditReason.trim())
+  const creditOverride =
+    creditFails && credit?.blocked && creditReason.trim() ? creditReason.trim() : undefined
+
+  // phone is optional, but a half-typed one is a data-entry slip, not a choice
+  const country = options?.property?.country
+  const badPhone =
+    !isPhoneComplete(form.phone, country) ||
+    (onBehalf && !isPhoneComplete(form.booked_by_phone, country))
 
   useEffect(() => {
     if (!form.room_type) return
@@ -168,7 +377,11 @@ export function BookingDialog(props: {
         adults: form.adults,
         children: form.children,
         meal_plan: form.meal_plan || undefined,
+        rate_plan: form.rate_plan || undefined,
+        company: form.company || undefined,
         voucher_code: form.voucher_code || undefined,
+        over_capacity_charge: extraCharge || undefined,
+        pets: form.pets || undefined,
       })
         .then((q) => {
           setQuote(q)
@@ -188,7 +401,15 @@ export function BookingDialog(props: {
     form.adults,
     form.children,
     form.meal_plan,
+    form.rate_plan,
+    form.company,
     form.voucher_code,
+    // the agreed amount for guests above capacity rides the room night, so a
+    // change to it has to re-quote - without this the panel kept showing the
+    // rate card total while the desk typed the price they had agreed
+    form.over_capacity_charge,
+    form.over_capacity_guests,
+    form.pets,
     checkOut,
   ])
 
@@ -209,13 +430,57 @@ export function BookingDialog(props: {
                 adults: r.adults,
                 children: r.children,
                 meal_plan: r.meal_plan || undefined,
+                rate_plan: form.rate_plan || undefined,
+                company: form.company || undefined,
               }).catch(() => null)
             : Promise.resolve(null),
         ),
       ).then(setMoreQuotes)
     }, 300)
     return () => clearTimeout(t)
-  }, [moreRooms, form.check_in_date, checkOut])
+  }, [moreRooms, form.check_in_date, checkOut, form.rate_plan, form.company])
+
+  // walk-in: the actual rooms free tonight, clean ones first
+  useEffect(() => {
+    if (!walkIn || !form.room_type) return
+    setFreeRooms(null)
+    let live = true
+    call<FreeRoom[]>("kamra.api.available_rooms", {
+      property: getCurrentProperty(),
+      room_type: form.room_type,
+      check_in_date: form.check_in_date,
+      check_out_date: checkOut,
+      // the guest takes the key now: a room whose guest has not checked
+      // out yet is not free, even on their departure day
+      ready_now: 1,
+    })
+      .then((rs) => {
+        if (!live) return
+        const rank = (r: FreeRoom) =>
+          r.housekeeping_status === "Clean" ||
+          r.housekeeping_status === "Inspected"
+            ? 0
+            : 1
+        const sorted = [...rs].sort(
+          (a, b) =>
+            rank(a) - rank(b) ||
+            a.room_number.localeCompare(b.room_number, undefined, {
+              numeric: true,
+            }),
+        )
+        setFreeRooms(sorted)
+        setWalk((w) => ({
+          ...w,
+          room: sorted.some((r) => r.name === w.room)
+            ? w.room
+            : (sorted[0]?.name ?? ""),
+        }))
+      })
+      .catch(() => live && setFreeRooms([]))
+    return () => {
+      live = false
+    }
+  }, [walkIn, form.room_type, form.check_in_date, checkOut])
 
   function shortErr(e: unknown): string {
     const body = (e as { body?: string }).body
@@ -223,7 +488,7 @@ export function BookingDialog(props: {
       try {
         const msgs = JSON.parse(JSON.parse(body)._server_messages ?? "[]")
         if (msgs.length)
-          return String(JSON.parse(msgs[0]).message).replace(/<[^>]+>/g, "")
+          return htmlToText(String(JSON.parse(msgs[0]).message))
       } catch {
         /* fall through */
       }
@@ -237,6 +502,9 @@ export function BookingDialog(props: {
     try {
       if (waitlist) {
         const res = await createBooking({
+          over_capacity_reason: form.over_capacity_reason || undefined,
+          over_capacity_guests: form.over_capacity_guests || undefined,
+          over_capacity_charge: extraCharge || undefined,
           guest_name: form.guest_name,
           phone: form.phone || undefined,
           guest: profile?.name,
@@ -246,15 +514,19 @@ export function BookingDialog(props: {
           adults: form.adults,
           children: form.children,
           meal_plan: form.meal_plan || undefined,
+          rate_plan: form.rate_plan || undefined,
           voucher_code: form.voucher_code || undefined,
+          pets: form.pets || undefined,
           company: form.company || undefined,
           waitlist: 1,
+          ...slotArgs,
+          blacklist_override_reason: blacklistOverride,
         })
         setDone({ ref: res.reservation, room: null, waitlist: true })
         props.onBooked()
         return
       }
-      if (moreRooms.length > 0) {
+      if (moreRooms.length > 0 && !dayUse) {
         // several rooms → one group booking, billable as a block
         const rooms = [
           {
@@ -285,10 +557,11 @@ export function BookingDialog(props: {
           guest_name: form.guest_name,
           phone: form.phone || undefined,
           company: form.company || undefined,
+          rate_plan: form.rate_plan || undefined,
         })
         if (out.skipped.length > 0) {
           setError(
-            `Booked ${out.created.length} of ${rooms.length} rooms - ` +
+            translate("Booked {v0} of {v1} rooms - ", { v0: String(out.created.length), v1: String(rooms.length) }) +
               out.skipped.map((s) => s.reason).join("; "),
           )
           if (out.created.length === 0) return
@@ -298,16 +571,22 @@ export function BookingDialog(props: {
         return
       }
       const res = await createBooking({
+        over_capacity_reason: form.over_capacity_reason || undefined,
+          over_capacity_guests: form.over_capacity_guests || undefined,
+          over_capacity_charge: extraCharge || undefined,
         guest_name: form.guest_name,
         phone: form.phone || undefined,
         guest: profile?.name,
         room_type: form.room_type,
+        room: pinnedRoom ? props.initial.room : undefined,
         check_in_date: form.check_in_date,
         check_out_date: checkOut,
         adults: form.adults,
         children: form.children,
         meal_plan: form.meal_plan || undefined,
+        rate_plan: form.rate_plan || undefined,
         voucher_code: form.voucher_code || undefined,
+        pets: form.pets || undefined,
         company: form.company || undefined,
         travel_agent: form.travel_agent || undefined,
         booking_type: form.company ? "Corporate" : undefined,
@@ -343,8 +622,68 @@ export function BookingDialog(props: {
         addons: Object.entries(addonQty)
           .filter(([, q]) => q > 0)
           .map(([experience, qty]) => ({ experience, qty })),
+        ...slotArgs,
+        blacklist_override_reason: blacklistOverride,
+        credit_override_reason: creditOverride,
       })
       setDone({ ref: res.reservation, room: res.room })
+      props.onBooked()
+      call<{ deposit: DepositState }>("kamra.api.reservation_detail", {
+        reservation: res.reservation,
+      })
+        .then((d) =>
+          setDone((cur) => (cur && cur.ref === res.reservation ? { ...cur, deposit: d.deposit } : cur)),
+        )
+        .catch(() => {})
+    } catch (e) {
+      setError(shortErr(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  // one key per open dialog: a double-tap replays instead of double-booking
+  const [walkInKey] = useState(() =>
+    typeof crypto !== "undefined" && "randomUUID" in crypto
+      ? crypto.randomUUID()
+      : `walkin-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+  )
+
+  async function submitWalkIn() {
+    setBusy(true)
+    setError(null)
+    try {
+      const amount = Number(walk.pay_amount) || 0
+      if (amount > 0 && pinStatus?.required) await ensureUnlocked()
+      const res = await call<WalkInResult>("kamra.api.walk_in", {
+        property: getCurrentProperty(),
+        room_type: form.room_type,
+        room: walk.room,
+        check_out_date: checkOut,
+        guest_name: form.guest_name,
+        phone: form.phone || undefined,
+        guest: profile?.name,
+        adults: form.adults,
+        children: form.children,
+        meal_plan: form.meal_plan || undefined,
+        rate_plan: form.rate_plan || undefined,
+        company: form.company || undefined,
+        voucher_code: form.voucher_code || undefined,
+        id_type: walk.id_type || undefined,
+        id_number: walk.id_number.trim() || undefined,
+        nationality: walk.nationality.trim() || undefined,
+        payment_mode: amount > 0 ? walk.pay_mode : undefined,
+        payment_amount: amount,
+        payment_reference: walk.pay_reference.trim() || undefined,
+        idempotency_key: walkInKey,
+        ...slotArgs,
+        blacklist_override_reason: blacklistOverride,
+        // book, assign and take the money now; the guided check-in
+        // (property's required steps) finishes it right after
+        defer_check_in: 1,
+      })
+      setDone({ ref: res.reservation, room: res.room, walkIn: res })
+      setGuidedCheckIn(res.checked_in === 0 ? res.reservation : null)
       props.onBooked()
     } catch (e) {
       setError(shortErr(e))
@@ -360,52 +699,17 @@ export function BookingDialog(props: {
     (rt) => rt.name === form.room_type,
   )
   const roomTypeName = selectedRt?.room_type_name ?? ""
-  const overCapacity =
-    !!selectedRt &&
-    ((selectedRt.adults_capacity > 0 &&
-      form.adults > selectedRt.adults_capacity) ||
-      (selectedRt.children_capacity > 0 &&
-        form.children > selectedRt.children_capacity))
-
-  // rooms needed to sleep the whole party in this room type, keeping at
-  // least one adult in every room
-  const roomsNeeded = (() => {
-    if (!selectedRt) return 1
-    const capA = selectedRt.adults_capacity || form.adults || 1
-    const capC = selectedRt.children_capacity
-    const n = Math.max(
-      Math.ceil(form.adults / Math.max(1, capA)),
-      capC > 0 ? Math.ceil(form.children / capC) : 1,
-      1,
-    )
-    return Math.min(n, Math.max(1, form.adults))
-  })()
-
-  const distributeParty = () => {
-    // spread the party as evenly as possible; the lot books as one group
-    const n = roomsNeeded
-    const baseA = Math.floor(form.adults / n)
-    const remA = form.adults % n
-    const baseC = Math.floor(form.children / n)
-    const remC = form.children % n
-    const alloc = Array.from({ length: n }, (_, i) => ({
-      adults: baseA + (i < remA ? 1 : 0),
-      children: baseC + (i < remC ? 1 : 0),
-    }))
-    setForm((f) => ({
-      ...f,
-      adults: alloc[0].adults,
-      children: alloc[0].children,
-    }))
-    setMoreRooms(
-      alloc.slice(1).map((a) => ({
-        room_type: form.room_type,
-        adults: a.adults,
-        children: a.children,
-        meal_plan: form.meal_plan,
-      })),
-    )
-  }
+  // Adults and Children stop at what the room sleeps; anyone above that is an
+  // extra guest by arrangement, counted on its own up to the room type's
+  // extra beds, at a price the desk agrees and a reason that records who did
+  const adultsCap = sleeps(selectedRt, "adults")
+  const childrenCap = sleeps(selectedRt, "children")
+  const extraBeds = Number(selectedRt?.max_extra_beds || 0)
+  // a charge left behind after the count goes back to 0 must not bill
+  const extraCharge =
+    form.over_capacity_guests > 0 ? form.over_capacity_charge : 0
+  const extraNeedsReason =
+    form.over_capacity_guests > 0 && !form.over_capacity_reason.trim()
 
   const grandTotal = (() => {
     if (!quote) return 0
@@ -420,12 +724,49 @@ export function BookingDialog(props: {
     )
   })()
 
-  const cancelCutoff = (() => {
-    const pol = options?.property
-    if (!pol) return ""
-    const d = new Date(form.check_in_date + "T00:00:00")
-    d.setDate(d.getDate() - (pol.free_cancel_days || 0))
-    return d.toISOString().slice(0, 10)
+  useEffect(() => {
+    if (walkIn && !amountTouched)
+      setWalk((w) => ({
+        ...w,
+        pay_amount: grandTotal > 0 ? String(Math.round(grandTotal * 100) / 100) : "",
+      }))
+  }, [walkIn, amountTouched, grandTotal])
+
+  const payAmount = Number(walk.pay_amount) || 0
+  // taking the walk-in's money needs the operator's till open
+  const { till, refresh: refreshTill } = useTill(undefined, walkIn)
+  const tillClosed = walkIn && payAmount > 0 && !!till && !till.open
+  const walkInBlocked =
+    blacklistBlocked ||
+    busy ||
+    !form.guest_name ||
+    !quote ||
+    badPhone ||
+    badSlot ||
+    !walk.room ||
+    payAmount < 0 ||
+    (!!walk.id_number.trim() && !walk.id_type)
+
+  // the server judges the terms from today (season, tiers, free window);
+  // a window that has already closed reads as non-refundable, never as a
+  // "free until" date in the past
+  const cancelText = (() => {
+    const c = quote?.cancellation
+    if (!c) return ""
+    if (c.non_refundable_season)
+      return t("Non-refundable dates ({season}): the full stay is charged on cancellation.", {
+        season: c.non_refundable_season,
+      })
+    if (!c.free_now)
+      return t("Non-refundable from now: {fee} is charged on cancellation.", {
+        fee: c.fee_label,
+      })
+    if (c.free_until)
+      return t("Free cancellation until {date}; after that {fee} is charged.", {
+        date: c.free_until,
+        fee: c.fee_label,
+      })
+    return t("Free cancellation.")
   })()
 
   const addonsGross = Object.entries(addonQty).reduce((s, [n, q]) => {
@@ -438,7 +779,7 @@ export function BookingDialog(props: {
       className="fixed inset-0 z-50"
       role="dialog"
       aria-modal="true"
-      aria-label="New booking"
+      aria-label={(walkIn ? t("Walk-in") : t("New booking"))}
       onKeyDown={(e) => e.key === "Escape" && props.onClose()}
     >
       <div
@@ -452,43 +793,218 @@ export function BookingDialog(props: {
         <header className="flex shrink-0 items-center justify-between gap-4 border-b border-zinc-200 px-6 py-4 md:px-8">
           <div className="min-w-0">
             <h2 className="text-xl font-semibold tracking-tight text-zinc-900">
-              New booking
+              {walkIn ? t("Walk-in") : t("New booking")}
             </h2>
             <p className="mt-0.5 truncate text-sm text-zinc-500">
               {getCurrentProperty()}
               <span className="text-zinc-300"> · </span>
-              Live quote as you type
+              {walkIn
+                ? t("Book, check in and collect in one step")
+                : t("Live quote as you type")}
+              {pinnedRoom && (
+                <>
+                  <span className="text-zinc-300"> · </span>
+                  {t("Room {n}", { n: props.initial.room_number || props.initial.room || "" })}
+                </>
+              )}
             </p>
           </div>
-          <Button variant="ghost" onClick={props.onClose} aria-label="Close">
+          {!done && (
+            <div
+              role="radiogroup"
+              aria-label={t("Booking mode")}
+              className="ml-auto inline-flex shrink-0 rounded-lg bg-zinc-100 p-0.5 text-sm font-medium"
+            >
+              {[
+                { on: false, label: t("Reservation") },
+                { on: true, label: t("Walk-in") },
+              ].map((m) => (
+                <button
+                  key={m.label}
+                  type="button"
+                  role="radio"
+                  aria-checked={walkIn === m.on}
+                  onClick={() => toggleWalkIn(m.on)}
+                  className={
+                    "rounded-md px-3 py-1.5 transition-colors " +
+                    (walkIn === m.on
+                      ? "bg-white text-zinc-900 shadow-sm"
+                      : "text-zinc-500 hover:text-zinc-800")
+                  }
+                >
+                  {translate(m.label)}
+                </button>
+              ))}
+            </div>
+          )}
+          <Button variant="ghost" onClick={props.onClose} aria-label={t("Close")}>
             <X className="size-5" />
           </Button>
         </header>
 
         {done ? (
           <div className="space-y-5 overflow-y-auto px-6 py-8 md:px-8">
-            {done.waitlist ? (
-              <div className="rounded-xl border border-amber-200 bg-amber-50 px-5 py-4 text-amber-800">
-                <p className="text-lg font-semibold">Waitlisted · {done.ref}</p>
+            {done.walkIn ? (
+              <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-5 py-4 text-emerald-800">
+                <p className="text-lg font-semibold">
+                  {done.walkIn.checked_in === 0 && !walkInCheckedIn
+                    ? t("Booked · Room {n}. Check-in not finished yet.", { n: done.walkIn.room_number })
+                    : t("Checked in · Room {n}", { n: done.walkIn.room_number })}
+                </p>
                 <p className="mt-1 text-sm">
-                  Parked with no room. Promote it from the reservation when a
-                  room frees. Auto-purges 2 days after departure.
+                  {done.ref}
+                  {" · "}
+                  {(done.walkIn.paid ?? 0) > 0
+                    ? t("{amt} of {total} collected", {
+                        amt: `${cur()}${inr(done.walkIn.paid ?? 0)}`,
+                        total: `${cur()}${inr(done.walkIn.amount_after_tax ?? 0)}`,
+                      })
+                    : t("Nothing collected yet - it's all on the bill.")}
+                </p>
+              </div>
+            ) : done.waitlist ? (
+              <div className="rounded-xl border border-amber-200 bg-amber-50 px-5 py-4 text-amber-800">
+                <p className="text-lg font-semibold">{t("Waitlisted · {ref}", { ref: done.ref })}</p>
+                <p className="mt-1 text-sm">
+                  {t("Parked with no room. Promote it from the reservation when a room frees. Auto-purges 2 days after departure.")}
                 </p>
               </div>
             ) : (
               <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-5 py-4 text-emerald-800">
-                <p className="text-lg font-semibold">Booked · {done.ref}</p>
+                <p className="text-lg font-semibold">{t("Booked · {ref}", { ref: done.ref })}</p>
                 <p className="mt-1 text-sm">
                   {done.room
-                    ? `Room ${done.room.split("-").pop()} assigned.`
-                    : "No room auto-assigned — pick one from Reservations."}{" "}
-                  Find it under Arrivals on the stay date.
+                    ? t("Room {n} assigned.", { n: done.room.split("-").pop() ?? "" })
+                    : t("No room auto-assigned - pick one from Reservations.")}{" "}
+                  {t("Find it under Arrivals on the stay date.")}
                 </p>
               </div>
             )}
-            <Button className="px-5 py-2.5 text-base" onClick={props.onClose}>
-              Done
-            </Button>
+
+            {/* Confirmation snapshot so desk staff can read the stay back
+                without reopening the reservation (Fares). */}
+            <div className="rounded-xl border border-zinc-200 bg-white p-5 shadow-sm">
+              <dl className="grid gap-4 sm:grid-cols-2">
+                <div>
+                  <dt className="text-xs font-medium text-zinc-400">{t("Guest name")}</dt>
+                  <dd className="mt-1 font-semibold text-zinc-900">
+                    {form.guest_name || "-"}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-xs font-medium text-zinc-400">{t("Phone")}</dt>
+                  <dd className="mt-1 font-semibold text-zinc-900">
+                    {form.phone || "-"}
+                  </dd>
+                </div>
+
+                <div
+                  className={
+                    "sm:col-span-2 rounded-xl border p-4 " +
+                    (done.room
+                      ? "border-brand-200 bg-brand-50"
+                      : "border-zinc-200 bg-zinc-50")
+                  }
+                >
+                  <dt
+                    className={
+                      "text-xs font-semibold " +
+                      (done.room ? "text-brand-700" : "text-zinc-500")
+                    }
+                  >
+                    {t("Room")}
+                  </dt>
+                  <dd
+                    className={
+                      "mt-1 text-2xl font-bold " +
+                      (done.room ? "text-brand-900" : "text-zinc-700")
+                    }
+                  >
+                    {done.room
+                      ? (done.room.split("-").pop() ?? done.room)
+                      : t("Unassigned")}
+                  </dd>
+                  <dd
+                    className={
+                      "mt-1 text-sm " +
+                      (done.room ? "text-brand-700" : "text-zinc-500")
+                    }
+                  >
+                    {roomTypeName || form.room_type}
+                    {moreRooms.length > 0
+                      ? ` · ${1 + moreRooms.length} ${t("Rooms")}`
+                      : ""}
+                  </dd>
+                </div>
+
+                <div>
+                  <dt className="text-xs font-medium text-zinc-400">{t("Check-in")}</dt>
+                  <dd className="mt-1 font-semibold text-zinc-900">
+                    {form.check_in_date}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-xs font-medium text-zinc-400">{t("Check-out")}</dt>
+                  <dd className="mt-1 font-semibold text-zinc-900">{checkOut}</dd>
+                </div>
+                <div>
+                  <dt className="text-xs font-medium text-zinc-400">
+                    {dayUse ? t("Day use") : t("Nights")}
+                  </dt>
+                  <dd className="mt-1 font-semibold text-zinc-900">
+                    {dayUse ? `${slot.from}-${slot.to}` : form.nights}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-xs font-medium text-zinc-400">{t("Guests")}</dt>
+                  <dd className="mt-1 font-semibold text-zinc-900">
+                    {form.adults} {t("Adults")}
+                    {form.children > 0
+                      ? ` · ${form.children} ${t("Children")}`
+                      : ""}
+                  </dd>
+                </div>
+              </dl>
+            </div>
+
+            {done.deposit && !done.walkIn && !done.waitlist && (
+              <DepositPanel
+                reservation={done.ref}
+                deposit={done.deposit}
+                guestPhone={form.phone}
+                onChanged={(dep) => {
+                  setDone((cur) => (cur ? { ...cur, deposit: dep } : cur))
+                  props.onBooked()
+                }}
+              />
+            )}
+
+            <div className="flex flex-wrap gap-2">
+              {done.walkIn?.checked_in === 0 && !walkInCheckedIn && (
+                <Button className="px-5 py-2.5 text-base" onClick={() => setGuidedCheckIn(done.ref)}>
+                  {t("Finish check-in")}
+                </Button>
+              )}
+              <Button
+                variant={done.walkIn?.checked_in === 0 && !walkInCheckedIn ? "outline" : undefined}
+                className="px-5 py-2.5 text-base"
+                onClick={props.onClose}
+              >
+                {t("Done")}
+              </Button>
+              {done.walkIn?.folio && (
+                <Button
+                  variant="outline"
+                  className="px-5 py-2.5 text-base"
+                  onClick={() => {
+                    navigate(`/billing/${done.walkIn!.folio}`)
+                    props.onClose()
+                  }}
+                >
+                  {t("Open bill")}
+                </Button>
+              )}
+            </div>
           </div>
         ) : (
           <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
@@ -506,7 +1022,7 @@ export function BookingDialog(props: {
                 )}
 
                 <div className="grid gap-4 sm:grid-cols-2">
-                  <Field label="Guest name">
+                  <Field label={t("Guest name")}>
                     <div className="relative">
                       <input
                         className={inputCls}
@@ -515,7 +1031,7 @@ export function BookingDialog(props: {
                           setProfile(null)
                           set("guest_name", e.target.value)
                         }}
-                        placeholder="Type to find or create"
+                        placeholder={t("Type to find or create")}
                         autoFocus
                       />
                       {hits.length > 0 && (
@@ -536,15 +1052,20 @@ export function BookingDialog(props: {
                                 }}
                               >
                                 <span className="font-medium">{h.full_name}</span>
+                                {Boolean(h.blacklisted) && (
+                                  <span className="rounded-full bg-rose-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-rose-700">
+                                    {t("Blacklisted")}
+                                  </span>
+                                )}
                                 {Boolean(h.vip) && (
                                   <Star
                                     className="size-3 fill-amber-400 text-amber-400"
-                                    aria-label="VIP"
+                                    aria-label={t("VIP")}
                                   />
                                 )}
                                 <span className="ml-auto text-xs text-zinc-400">
                                   {h.phone ? `${h.phone} · ` : ""}
-                                  {h.stays} stay{h.stays === 1 ? "" : "s"}
+                                  {h.stays} {t("stay{s}", { s: h.stays === 1 ? "" : "s" })}
                                 </span>
                               </button>
                             </li>
@@ -554,11 +1075,13 @@ export function BookingDialog(props: {
                     </div>
                     {profile && (
                       <span className="mt-1.5 inline-flex items-center gap-1.5 rounded-full bg-brand-50 px-2.5 py-1 text-xs font-medium text-brand-700">
-                        Returning guest · {profile.stays} stay
-                        {profile.stays === 1 ? "" : "s"}
+                        {t("Returning guest · {n} stay{s}", {
+                          n: profile.stays,
+                          s: profile.stays === 1 ? "" : "s",
+                        })}
                         <button
                           type="button"
-                          aria-label="Detach profile"
+                          aria-label={t("Detach profile")}
                           onClick={() => setProfile(null)}
                           className="text-brand-700/60 hover:text-brand-700"
                         >
@@ -567,144 +1090,585 @@ export function BookingDialog(props: {
                       </span>
                     )}
                   </Field>
-                  <Field label="Phone">
-                    <input
-                      className={inputCls}
+                  <Field label={t("Phone")}>
+                    <PhoneInput
                       value={form.phone}
-                      onChange={(e) => set("phone", e.target.value)}
-                      placeholder="+94 …"
+                      country={options?.property?.country}
+                      onChange={(v) => set("phone", v)}
                     />
                   </Field>
                 </div>
 
-                <Field label="Room type">
+                {blacklisted && (
+                  <div
+                    role="alert"
+                    className="space-y-3 rounded-xl border-2 border-rose-300 bg-rose-50 px-4 py-3 text-sm text-rose-800"
+                  >
+                    <div className="flex items-start gap-2">
+                      <ShieldAlert className="mt-0.5 size-5 shrink-0 text-rose-600" aria-hidden />
+                      <div>
+                        <p className="font-semibold">
+                          {alert?.full_name
+                            ? t("{name} is blacklisted", { name: alert.full_name })
+                            : t("This guest is blacklisted")}
+                        </p>
+                        {alert?.blacklist_reason && (
+                          <p className="mt-0.5">{alert.blacklist_reason}</p>
+                        )}
+                      </div>
+                    </div>
+                    {moreRooms.length > 0 ? (
+                      <p>{t("A multi-room booking can't override a blacklist. Book one room, or remove the flag on the guest profile.")}</p>
+                    ) : alert?.can_override ? (
+                      <>
+                        <label className="flex items-start gap-2">
+                          <input
+                            type="checkbox"
+                            className="mt-0.5"
+                            checked={blAck}
+                            onChange={(e) => setBlAck(e.target.checked)}
+                          />
+                          <span>{t("I understand and want to book this guest anyway")}</span>
+                        </label>
+                        {blAck && (
+                          <input
+                            className={inputCls}
+                            value={blReason}
+                            onChange={(e) => setBlReason(e.target.value)}
+                            placeholder={t("Reason for overriding the blacklist")}
+                          />
+                        )}
+                      </>
+                    ) : (
+                      <p>{t("Only a Hotel Admin can book a blacklisted guest.")}</p>
+                    )}
+                  </div>
+                )}
+
+                {creditFails && credit && (
+                  <div
+                    role="alert"
+                    className={
+                      credit.blocked
+                        ? "space-y-2 rounded-xl border-2 border-rose-300 bg-rose-50 px-4 py-3 text-sm text-rose-800"
+                        : "space-y-2 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900"
+                    }
+                  >
+                    <div className="flex items-start gap-2">
+                      <ShieldAlert className="mt-0.5 size-5 shrink-0" aria-hidden />
+                      <div>
+                        <p className="font-semibold">
+                          {credit.blocked
+                            ? t("{company}: company credit is blocked", { company: credit.company ?? "" })
+                            : t("{company}: company credit warning", { company: credit.company ?? "" })}
+                        </p>
+                        <ul className="mt-1 list-disc space-y-0.5 pl-4">
+                          {credit.reasons.map((r) => (
+                            <li key={r}>{translate(r)}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    </div>
+                    {credit.blocked &&
+                      (moreRooms.length > 0 ? (
+                        <p>{t("A multi-room booking can't override a credit block. Book one room, or have Finance raise the limit.")}</p>
+                      ) : credit.can_override ? (
+                        <input
+                          className={inputCls}
+                          value={creditReason}
+                          maxLength={500}
+                          onChange={(e) => setCreditReason(e.target.value)}
+                          placeholder={t("Reason for the credit override (logged)")}
+                        />
+                      ) : (
+                        <p>{t("Only Finance or a Hotel Admin can override it.")}</p>
+                      ))}
+                  </div>
+                )}
+
+                {walkIn && (
+                  <div className="grid gap-3 sm:grid-cols-3">
+                    <Field label={t("ID type")}>
+                      <select
+                        className={inputCls}
+                        value={walk.id_type}
+                        onChange={(e) => setW("id_type", e.target.value)}
+                      >
+                        <option value="">{t("Select")}</option>
+                        {loc.id_types.map((x) => (
+                          <option key={x} value={x}>
+                            {t(x)}
+                          </option>
+                        ))}
+                      </select>
+                    </Field>
+                    <Field label={t("ID number")}>
+                      <input
+                        className={inputCls}
+                        value={walk.id_number}
+                        onChange={(e) => setW("id_number", e.target.value)}
+                        autoComplete="off"
+                      />
+                      {!!walk.id_number.trim() && !walk.id_type && (
+                        <p className="mt-1.5 text-xs text-rose-600">
+                          {t("Pick the ID type too.")}
+                        </p>
+                      )}
+                    </Field>
+                    <Field label={t("Nationality")}>
+                      <input
+                        className={inputCls}
+                        value={walk.nationality}
+                        onChange={(e) => setW("nationality", e.target.value)}
+                      />
+                    </Field>
+                  </div>
+                )}
+
+                <div className={walkIn ? "grid gap-3 sm:grid-cols-2" : ""}>
+                <Field label={t("Room type")}>
                   <select
                     className={inputCls}
                     value={form.room_type}
-                    onChange={(e) => set("room_type", e.target.value)}
+                    onChange={(e) => {
+                      // a smaller room type leaves a party it cannot sleep
+                      const rt = options?.room_types.find(
+                        (x) => x.name === e.target.value,
+                      )
+                      setForm((f) => ({
+                        ...f,
+                        room_type: e.target.value,
+                        adults: clampGuests(f.adults, 1, sleeps(rt, "adults")),
+                        children: clampGuests(
+                          f.children,
+                          0,
+                          sleeps(rt, "children"),
+                        ),
+                        over_capacity_guests: Math.min(
+                          f.over_capacity_guests,
+                          Number(rt?.max_extra_beds || 0),
+                        ),
+                      }))
+                    }}
                   >
                     {options?.room_types.map((rt) => (
                       <option key={rt.name} value={rt.name}>
-                        {rt.room_type_name} · {/* {cur()}
-                        {inr(rt.base_price)}/night */}
+                        {rt.room_type_name} · {t("BAR")} {cur()}
+                        {inr(rt.base_price)}/{t("night")}
                       </option>
                     ))}
                   </select>
                   {selectedRt &&
                     (selectedRt.adults_capacity > 0 ||
-                      selectedRt.children_capacity > 0) &&
-                    !overCapacity && (
+                      selectedRt.children_capacity > 0) && (
                       <p className="mt-1.5 text-xs text-zinc-400">
-                        Sleeps up to {selectedRt.adults_capacity} adults
-                        {selectedRt.children_capacity > 0 &&
-                          ` · ${selectedRt.children_capacity} children`}
+                        {t("Sleeps up to {guests}", {
+                          guests: [
+                            selectedRt.adults_capacity > 0 &&
+                              tn(selectedRt.adults_capacity, "{n} adult", "{n} adults"),
+                            selectedRt.children_capacity > 0 &&
+                              tn(selectedRt.children_capacity, "{n} child", "{n} children"),
+                          ]
+                            .filter(Boolean)
+                            .join(" · "),
+                        })}
                       </p>
                     )}
                 </Field>
+                {walkIn && (
+                  <Field label={t("Room")}>
+                    <select
+                      className={inputCls}
+                      value={walk.room}
+                      disabled={!freeRooms?.length}
+                      onChange={(e) => setW("room", e.target.value)}
+                    >
+                      {freeRooms === null ? (
+                        <option value="">{t("Loading…")}</option>
+                      ) : freeRooms.length === 0 ? (
+                        <option value="">{t("No free room tonight")}</option>
+                      ) : (
+                        freeRooms.map((r) => (
+                          <option key={r.name} value={r.name}>
+                            {r.room_number}
+                            {r.housekeeping_status
+                              ? ` · ${t(r.housekeeping_status)}`
+                              : ""}
+                          </option>
+                        ))
+                      )}
+                    </select>
+                    {freeRooms?.length === 0 && (
+                      <p className="mt-1.5 text-xs text-rose-600">
+                        {t("This type is full tonight - try another room type.")}
+                      </p>
+                    )}
+                    {(() => {
+                      const r = freeRooms?.find((x) => x.name === walk.room)
+                      return r?.housekeeping_status &&
+                        !["Clean", "Inspected"].includes(r.housekeeping_status) ? (
+                        <p className="mt-1.5 text-xs text-amber-700">
+                          {t("{room} hasn't been cleaned yet - housekeeping will see the room flip to occupied.", {
+                            room: r.room_number,
+                          })}
+                        </p>
+                      ) : null
+                    })()}
+                  </Field>
+                )}
+                </div>
+
+                <div
+                  role="radiogroup"
+                  aria-label={t("Stay type")}
+                  className="inline-flex rounded-lg border border-zinc-200 bg-zinc-50 p-0.5 text-sm"
+                >
+                  {([false, true] as const).map((du) => (
+                    <button
+                      key={String(du)}
+                      type="button"
+                      role="radio"
+                      aria-checked={dayUse === du}
+                      onClick={() => {
+                        setDayUse(du)
+                        if (du) setMoreRooms([])
+                      }}
+                      className={
+                        "rounded-md px-3 py-1.5 font-medium " +
+                        (dayUse === du
+                          ? "bg-white text-brand-800 shadow-sm"
+                          : "text-zinc-500 hover:text-zinc-700")
+                      }
+                    >
+                      {du ? t("Day use") : t("Overnight")}
+                    </button>
+                  ))}
+                </div>
 
                 <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-                  <Field label="Check-in">
+                  <Field label={t("Check-in")}>
                     <input
                       type="date"
-                      className={inputCls}
+                      className={inputCls + (walkIn ? " bg-zinc-50 text-zinc-500" : "")}
+                      min={todayLocal()}
                       value={form.check_in_date}
+                      readOnly={walkIn}
+                      title={(walkIn ? t("A walk-in arrives today") : undefined)}
                       onChange={(e) => set("check_in_date", e.target.value)}
                     />
+                    {pastCheckIn && (
+                      <p className="mt-1.5 text-xs text-rose-600">
+                        {t("That date has already passed.")}
+                      </p>
+                    )}
                   </Field>
-                  <Field label="Nights">
-                    <input
-                      type="number"
-                      min={0}
-                      className={inputCls}
-                      value={form.nights}
-                      onChange={(e) =>
-                        set("nights", Math.max(0, Number(e.target.value)))
-                      }
-                    />
-                  </Field>
-                  <Field label="Adults">
+                  {dayUse ? (
+                    /* Two time inputs need two columns - a single cell overflows
+                       into Adults and looks like a double text box. */
+                    <div className="col-span-2 min-w-0 sm:col-span-3">
+                      <Field label={t("Time slot")}>
+                        <div className="flex min-w-0 items-center gap-1">
+                          <input
+                            type="time"
+                            aria-label={t("From")}
+                            className={inputCls + " min-w-0 flex-1 px-2"}
+                            value={slot.from}
+                            onChange={(e) => setSlot((x) => ({ ...x, from: e.target.value }))}
+                          />
+                          <span className="shrink-0 text-zinc-400" aria-hidden>
+                            -
+                          </span>
+                          <input
+                            type="time"
+                            aria-label={t("To")}
+                            className={inputCls + " min-w-0 flex-1 px-2"}
+                            value={slot.to}
+                            onChange={(e) => setSlot((x) => ({ ...x, to: e.target.value }))}
+                          />
+                        </div>
+                        {badSlot && (
+                          <p className="mt-1.5 text-xs text-rose-600">
+                            {t("The slot must end after it starts.")}
+                          </p>
+                        )}
+                      </Field>
+                    </div>
+                  ) : (
+                    <Field label={t("Nights")}>
+                      <input
+                        type="number"
+                        min={1}
+                        className={inputCls}
+                        value={form.nights}
+                        onChange={(e) =>
+                          set("nights", Math.max(1, Number(e.target.value)))
+                        }
+                      />
+                    </Field>
+                  )}
+                  <Field label={t("Adults")}>
                     <input
                       type="number"
                       min={1}
+                      max={adultsCap || undefined}
                       className={inputCls}
                       value={form.adults}
                       onChange={(e) =>
-                        set("adults", Math.max(1, Number(e.target.value)))
+                        set(
+                          "adults",
+                          clampGuests(Number(e.target.value), 1, adultsCap),
+                        )
                       }
                     />
                   </Field>
-                  <Field label="Children">
+                  <Field label={t("Children")}>
                     <input
                       type="number"
                       min={0}
+                      max={childrenCap || undefined}
                       className={inputCls}
                       value={form.children}
                       onChange={(e) =>
-                        set("children", Math.max(0, Number(e.target.value)))
+                        set(
+                          "children",
+                          clampGuests(Number(e.target.value), 0, childrenCap),
+                        )
                       }
                     />
                   </Field>
                 </div>
 
-                {selectedRt && overCapacity && (
-                  <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2.5 text-sm text-amber-800">
-                    {selectedRt.room_type_name} sleeps up to{" "}
-                    <strong>{selectedRt.adults_capacity} adults</strong>
-                    {selectedRt.children_capacity > 0 && (
-                      <>
-                        {" · "}
-                        <strong>{selectedRt.children_capacity} children</strong>
-                      </>
-                    )}{" "}
-                    per room.{" "}
-                    <button
-                      className="font-semibold text-brand-700 hover:underline"
-                      onClick={distributeParty}
-                    >
-                      Split into {roomsNeeded} rooms
-                    </button>
+                {options?.property.pets_allowed ? (
+                  <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                    <Field label={t("Pets")}>
+                      <input
+                        type="number"
+                        min={0}
+                        className={inputCls}
+                        value={form.pets}
+                        onChange={(e) =>
+                          set("pets", Math.max(0, Number(e.target.value)))
+                        }
+                      />
+                    </Field>
+                    {options.property.pet_charge > 0 && (
+                      <p className="col-span-1 self-end pb-2 text-xs text-zinc-500 sm:col-span-3">
+                        {cur()}
+                        {inr(options.property.pet_charge)}{" "}
+                        {t(petChargeBasis(options.property.pet_charge_basis))}
+                      </p>
+                    )}
+                  </div>
+                ) : null}
+
+                {selectedRt && extraBeds > 0 && (
+                  <div
+                    className={
+                      "space-y-2 rounded-xl border px-3 py-2.5 text-sm " +
+                      (form.over_capacity_guests > 0
+                        ? "border-amber-200 bg-amber-50 text-amber-800"
+                        : "border-zinc-200 text-zinc-600")
+                    }
+                  >
+                    <div>
+                      {t("Extra guests by arrangement - up to {beds} above the {cap} it sleeps, at a price you agree", {
+                        beds: extraBeds,
+                        cap: selectedRt.adults_capacity,
+                      })}
+                    </div>
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      <label className="block">
+                        <span className="mb-1 block text-xs font-medium">
+                          {t("Extra guests")}
+                        </span>
+                        <input
+                          type="number"
+                          min={0}
+                          max={extraBeds}
+                          className={inputCls}
+                          value={form.over_capacity_guests}
+                          onChange={(e) =>
+                            set(
+                              "over_capacity_guests",
+                              clampGuests(Number(e.target.value), 0, extraBeds),
+                            )
+                          }
+                        />
+                      </label>
+                      {form.over_capacity_guests > 0 && (
+                        <label className="block">
+                          <span className="mb-1 block text-xs font-medium">
+                            {t("Agreed charge / night, all of them")}
+                          </span>
+                          <input
+                            type="number"
+                            min={0}
+                            className={inputCls}
+                            value={form.over_capacity_charge}
+                            onChange={(e) =>
+                              set("over_capacity_charge", Math.max(0, Number(e.target.value)))
+                            }
+                            placeholder={t("What you agreed for them")}
+                          />
+                        </label>
+                      )}
+                    </div>
+                    {form.over_capacity_guests > 0 && (
+                      <input
+                        className={inputCls}
+                        value={form.over_capacity_reason}
+                        onChange={(e) =>
+                          set("over_capacity_reason", e.target.value)
+                        }
+                        placeholder={t("Who agreed it, and why (required)")}
+                      />
+                    )}
                   </div>
                 )}
 
                 <div className="grid gap-3 sm:grid-cols-2">
-                  <Field label="Meal plan">
+                  <Field label={t("Meal plan")}>
                     <select
                       className={inputCls}
                       value={form.meal_plan}
                       onChange={(e) => set("meal_plan", e.target.value)}
                     >
-                      <option value="">Room only</option>
+                      <option value="">{t("Room only")}</option>
                       {options?.meal_plans.map((mp) => (
                         <option key={mp.name} value={mp.name}>
-                          {mp.label} {/*(+{cur()}
-                          {inr(mp.price_per_adult)}/adult)*/}
-                        </option>
+                          {translate(mp.label)} (+{cur()}
+                          {inr(mp.price_per_adult)}{translate("/adult)")}</option>
                       ))}
                     </select>
                   </Field>
-                  <Field label="Voucher">
+                  {(options?.rate_plans.length ?? 0) > 0 && (
+                    <Field label={t("Rate plan")}>
+                      <select
+                        className={inputCls}
+                        value={form.rate_plan}
+                        onChange={(e) => set("rate_plan", e.target.value)}
+                      >
+                        <option value="">
+                          {companyPlan
+                            ? `${t("Company rate")}: ${companyPlan.rate_plan_name}`
+                            : t("Standard rate (no plan)")}
+                        </option>
+                        {options?.rate_plans.map((rp) => (
+                          <option key={rp.name} value={rp.name}>
+                            {rp.rate_plan_name}
+                            {rp.code ? ` (${rp.code})` : ""}
+                          </option>
+                        ))}
+                      </select>
+                    </Field>
+                  )}
+                  <Field label={t("Voucher")}>
                     <input
                       className={inputCls}
                       value={form.voucher_code}
                       onChange={(e) =>
                         set("voucher_code", e.target.value.toUpperCase())
                       }
-                      placeholder="Optional code"
+                      placeholder={t("Optional code")}
                     />
                   </Field>
                 </div>
 
-                {moreRooms.map((r, i) => (
+                {form.room_type && (
+                  <RateOptions
+                    roomType={form.room_type}
+                    checkIn={form.check_in_date}
+                    checkOut={checkOut}
+                    adults={form.adults}
+                    children={form.children}
+                    mealPlan={form.meal_plan || undefined}
+                    voucher={form.voucher_code || undefined}
+                    ratePlan={form.rate_plan}
+                    onPickPlan={(p) => set("rate_plan", p)}
+                  />
+                )}
+
+                {walkIn && (
+                  <div className="space-y-3 rounded-xl border border-zinc-200 p-4">
+                    <h3 className="text-sm font-semibold text-zinc-800">
+                      {t("Payment")}
+                    </h3>
+                    <div
+                      role="radiogroup"
+                      aria-label={t("Payment mode")}
+                      className="flex flex-wrap gap-2"
+                    >
+                      {loc.payment_modes.map((m) => (
+                        <button
+                          key={m}
+                          type="button"
+                          role="radio"
+                          aria-checked={walk.pay_mode === m}
+                          onClick={() => setW("pay_mode", m)}
+                          className={
+                            "rounded-lg border px-3.5 py-2 text-sm font-medium transition-colors " +
+                            (walk.pay_mode === m
+                              ? "border-brand-600 bg-brand-50 text-brand-800"
+                              : "border-zinc-200 text-zinc-600 hover:border-zinc-300")
+                          }
+                        >
+                          {t(m)}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <Field label={t("Amount collected")}>
+                        <input
+                          type="number"
+                          min={0}
+                          step="0.01"
+                          inputMode="decimal"
+                          className={inputCls}
+                          value={walk.pay_amount}
+                          onChange={(e) => {
+                            setAmountTouched(true)
+                            setW("pay_amount", e.target.value)
+                          }}
+                        />
+                        <p className="mt-1.5 text-xs text-zinc-400">
+                          {payAmount <= 0
+                            ? t("Nothing collected now - the full amount stays on the bill.")
+                            : payAmount < grandTotal
+                              ? t("{amt} left on the bill.", {
+                                  amt: `${cur()}${inr(grandTotal - payAmount)}`,
+                                })
+                              : t("Paid in full.")}
+                        </p>
+                      </Field>
+                      {walk.pay_mode !== "Cash" && (
+                        <Field label={t("Reference")}>
+                          <input
+                            className={inputCls}
+                            value={walk.pay_reference}
+                            onChange={(e) => setW("pay_reference", e.target.value)}
+                            placeholder={t("Card slip / transfer ref (optional)")}
+                          />
+                        </Field>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {!walkIn && (<>
+                {moreRooms.map((r, i) => {
+                  const rt = options?.room_types.find(
+                    (o) => o.name === r.room_type,
+                  )
+                  return (
                   <div
                     key={i}
                     className="flex flex-wrap items-end gap-2 rounded-xl border border-zinc-200 bg-zinc-50/50 px-3 py-2.5"
                   >
-                    <span className="w-full text-xs font-medium uppercase tracking-wider text-zinc-400">
-                      Room {i + 2}
+                    <span className="w-full text-xs font-medium uppercase tracking-wider text-zinc-400">{translate("Room ")}{i + 2}
                     </span>
                     <select
                       className={`${inputCls} !w-auto flex-1`}
-                      aria-label={`Room ${i + 2} type`}
+                      aria-label={translate("Room {v0} type", { v0: String(i + 2) })}
                       value={r.room_type}
                       onChange={(e) =>
                         setMoreRooms((rs) =>
@@ -723,7 +1687,8 @@ export function BookingDialog(props: {
                     <input
                       type="number"
                       min={1}
-                      aria-label={`Room ${i + 2} adults`}
+                      max={sleeps(rt, "adults") || undefined}
+                      aria-label={translate("Room {v0} adults", { v0: String(i + 2) })}
                       className={`${inputCls} !w-16`}
                       value={r.adults}
                       onChange={(e) =>
@@ -732,7 +1697,10 @@ export function BookingDialog(props: {
                             j === i
                               ? {
                                   ...x,
-                                  adults: Math.max(1, Number(e.target.value)),
+                                  adults: clampGuests(
+                                    Number(e.target.value), 1,
+                                    sleeps(rt, "adults"),
+                                  ),
                                 }
                               : x,
                           ),
@@ -741,7 +1709,7 @@ export function BookingDialog(props: {
                     />
                     <select
                       className={`${inputCls} !w-auto`}
-                      aria-label={`Room ${i + 2} meal plan`}
+                      aria-label={translate("Room {v0} meal plan", { v0: String(i + 2) })}
                       value={r.meal_plan}
                       onChange={(e) =>
                         setMoreRooms((rs) =>
@@ -751,16 +1719,16 @@ export function BookingDialog(props: {
                         )
                       }
                     >
-                      <option value="">Room only</option>
+                      <option value="">{translate("Room only")}</option>
                       {options?.meal_plans.map((mp) => (
                         <option key={mp.name} value={mp.name}>
-                          {mp.label}
+                          {translate(mp.label)}
                         </option>
                       ))}
                     </select>
                     <button
                       className="rounded p-1.5 text-zinc-400 hover:text-rose-500"
-                      aria-label={`Remove room ${i + 2}`}
+                      aria-label={translate("Remove room {v0}", { v0: String(i + 2) })}
                       onClick={() =>
                         setMoreRooms((rs) => rs.filter((_, j) => j !== i))
                       }
@@ -768,9 +1736,10 @@ export function BookingDialog(props: {
                       <Trash2 className="size-4" aria-hidden />
                     </button>
                   </div>
-                ))}
+                  )
+                })}
 
-                <button
+                {!dayUse && <button
                   type="button"
                   className="inline-flex items-center gap-1.5 rounded-lg border border-dashed border-zinc-300 px-3 py-2 text-sm font-medium text-zinc-600 hover:border-brand-500 hover:bg-brand-50/40 hover:text-brand-800"
                   onClick={() =>
@@ -786,8 +1755,8 @@ export function BookingDialog(props: {
                   }
                 >
                   <Plus className="size-4" aria-hidden />
-                  Add another room
-                </button>
+                  {t("Add another room")}
+                </button>}
 
                 <div className="border-t border-zinc-100 pt-2">
                   <button
@@ -796,7 +1765,7 @@ export function BookingDialog(props: {
                     onClick={() => setMoreOpen((o) => !o)}
                     aria-expanded={moreOpen}
                   >
-                    <span>Company, add-ons & arrival details</span>
+                    <span>{t("Company, add-ons & arrival details")}</span>
                     <ChevronDown
                       className={
                         "size-4 text-zinc-400 transition-transform " +
@@ -809,7 +1778,7 @@ export function BookingDialog(props: {
                   {moreOpen && (
                     <div className="space-y-5 pb-2 pt-1">
                       <div className="grid gap-3 sm:grid-cols-2">
-                        <Field label="Company (bill corporate)">
+                        <Field label={translate("Company (bill corporate)")}>
                           <select
                             className={inputCls}
                             value={form.company}
@@ -823,7 +1792,7 @@ export function BookingDialog(props: {
                             ))}
                           </select>
                         </Field>
-                        <Field label="Travel agent">
+                        <Field label={translate("Travel agent")}>
                           <select
                             className={inputCls}
                             value={form.travel_agent}
@@ -844,9 +1813,7 @@ export function BookingDialog(props: {
                       {moreRooms.length === 0 &&
                         (options?.experiences.length ?? 0) > 0 && (
                           <div>
-                            <span className="mb-1.5 block text-sm font-medium text-zinc-600">
-                              Add-ons
-                            </span>
+                            <span className="mb-1.5 block text-sm font-medium text-zinc-600">{translate("Add-ons")}</span>
                             <div className="flex flex-wrap gap-1.5">
                               {options?.experiences.map((x) => {
                                 const on = (addonQty[x.name] ?? 0) > 0
@@ -877,11 +1844,7 @@ export function BookingDialog(props: {
                         )}
 
                       {moreRooms.length > 0 && (
-                        <p className="text-xs text-zinc-400">
-                          Multi-room bookings are created as a group — vouchers,
-                          add-ons and booker details can be added per stay
-                          afterwards.
-                        </p>
+                        <p className="text-xs text-zinc-400">{translate("Multi-room bookings are created as a group - vouchers, add-ons and booker details can be added per stay afterwards.")}</p>
                       )}
 
                       {moreRooms.length === 0 && (
@@ -892,35 +1855,32 @@ export function BookingDialog(props: {
                               className="size-4 accent-brand-600"
                               checked={onBehalf}
                               onChange={(e) => setOnBehalf(e.target.checked)}
-                            />
-                            Booked on someone&apos;s behalf
-                          </label>
+                            />{translate("Booked on someone's behalf")}</label>
                           {onBehalf && (
                             <div className="space-y-3">
                               <div className="grid gap-3 sm:grid-cols-2">
-                                <Field label="Booker name">
+                                <Field label={translate("Booker name")}>
                                   <input
                                     className={inputCls}
                                     value={form.booked_by_name}
                                     onChange={(e) =>
                                       set("booked_by_name", e.target.value)
                                     }
-                                    placeholder="Who arranged this stay"
+                                    placeholder={translate("Who arranged this stay")}
                                   />
                                 </Field>
-                                <Field label="Booker phone">
-                                  <input
-                                    className={inputCls}
+                                <Field label={translate("Booker phone")}>
+                                  <PhoneInput
                                     value={form.booked_by_phone}
-                                    onChange={(e) =>
-                                      set("booked_by_phone", e.target.value)
+                                    country={options?.property?.country}
+                                    onChange={(v) =>
+                                      set("booked_by_phone", v)
                                     }
-                                    placeholder="+94 …"
                                   />
                                 </Field>
                               </div>
                               <div className="grid gap-3 sm:grid-cols-2">
-                                <Field label="Relation">
+                                <Field label={translate("Relation")}>
                                   <select
                                     className={inputCls}
                                     value={form.booker_relation}
@@ -935,11 +1895,11 @@ export function BookingDialog(props: {
                                       "Company Travel Desk",
                                       "Travel Agent",
                                     ].map((r) => (
-                                      <option key={r}>{r}</option>
+                                      <option key={r} value={r}>{translate(r)}</option>
                                     ))}
                                   </select>
                                 </Field>
-                                <Field label="Send links & updates to">
+                                <Field label={translate("Send links & updates to")}>
                                   <select
                                     className={inputCls}
                                     value={form.contact_preference}
@@ -947,20 +1907,20 @@ export function BookingDialog(props: {
                                       set("contact_preference", e.target.value)
                                     }
                                   >
-                                    <option value="Booker">Booker</option>
-                                    <option value="Guest">Guest</option>
-                                    <option value="Both">Both</option>
+                                    <option value="Booker">{translate("Booker")}</option>
+                                    <option value="Guest">{translate("Guest")}</option>
+                                    <option value="Both">{translate("Both")}</option>
                                   </select>
                                 </Field>
                               </div>
                             </div>
                           )}
 
-                          <Field label="Special requests">
+                          <Field label={translate("Special requests")}>
                             <textarea
                               className={inputCls}
                               rows={2}
-                              placeholder="e.g. prayer mat, high floor, allergy notes"
+                              placeholder={translate("e.g. prayer mat, high floor, allergy notes")}
                               value={extra.special_requests}
                               onChange={(e) =>
                                 setX("special_requests", e.target.value)
@@ -985,13 +1945,13 @@ export function BookingDialog(props: {
                                   checked={extra[k]}
                                   onChange={(e) => setX(k, e.target.checked)}
                                 />
-                                {lbl}
+                                {translate(lbl)}
                               </label>
                             ))}
                           </div>
                           {extra.pickup_required && (
                             <div className="grid gap-3 sm:grid-cols-2">
-                              <Field label="Arrival mode">
+                              <Field label={translate("Arrival mode")}>
                                 <select
                                   className={inputCls}
                                   value={extra.arrival_mode}
@@ -999,15 +1959,15 @@ export function BookingDialog(props: {
                                     setX("arrival_mode", e.target.value)
                                   }
                                 >
-                                  <option value="">—</option>
-                                  <option>Air</option>
-                                  <option>Road</option>
-                                  <option>Rail</option>
-                                  <option>Sea</option>
-                                  <option>Own vehicle</option>
+                                  <option value=""> - </option>
+                                  <option value={"Air"}>{translate("Air")}</option>
+                                  <option value={"Road"}>{translate("Road")}</option>
+                                  <option value={"Rail"}>{translate("Rail")}</option>
+                                  <option value={"Sea"}>{translate("Sea")}</option>
+                                  <option value={"Own vehicle"}>{translate("Own vehicle")}</option>
                                 </select>
                               </Field>
-                              <Field label="Flight / train no.">
+                              <Field label={translate("Flight / train no.")}>
                                 <input
                                   className={inputCls}
                                   value={extra.arrival_ref}
@@ -1016,7 +1976,7 @@ export function BookingDialog(props: {
                                   }
                                 />
                               </Field>
-                              <Field label="Arrival time">
+                              <Field label={translate("Arrival time")}>
                                 <input
                                   type="datetime-local"
                                   className={inputCls}
@@ -1026,7 +1986,7 @@ export function BookingDialog(props: {
                                   }
                                 />
                               </Field>
-                              <Field label="Extra beds">
+                              <Field label={translate("Extra beds")}>
                                 <input
                                   type="number"
                                   min={0}
@@ -1040,7 +2000,7 @@ export function BookingDialog(props: {
                             </div>
                           )}
                           <div className="grid gap-3 sm:grid-cols-2">
-                            <Field label="Purpose of visit">
+                            <Field label={translate("Purpose of visit")}>
                               <select
                                 className={inputCls}
                                 value={extra.purpose}
@@ -1048,17 +2008,17 @@ export function BookingDialog(props: {
                                   setX("purpose", e.target.value)
                                 }
                               >
-                                <option value="">—</option>
-                                <option>Leisure</option>
-                                <option>Business</option>
-                                <option>Event / Wedding</option>
-                                <option>Medical</option>
-                                <option>Pilgrimage</option>
-                                <option>Crew</option>
-                                <option>Other</option>
+                                <option value=""> - </option>
+                                <option value={"Leisure"}>{translate("Leisure")}</option>
+                                <option value={"Business"}>{translate("Business")}</option>
+                                <option value={"Event / Wedding"}>{translate("Event / Wedding")}</option>
+                                <option value={"Medical"}>{translate("Medical")}</option>
+                                <option value={"Pilgrimage"}>{translate("Pilgrimage")}</option>
+                                <option value={"Crew"}>{translate("Crew")}</option>
+                                <option value={"Other"}>{translate("Other")}</option>
                               </select>
                             </Field>
-                            <Field label="Guest category">
+                            <Field label={translate("Guest category")}>
                               <select
                                 className={inputCls}
                                 value={extra.guest_category}
@@ -1066,11 +2026,11 @@ export function BookingDialog(props: {
                                   setX("guest_category", e.target.value)
                                 }
                               >
-                                <option value="">Standard</option>
-                                <option>VIP</option>
-                                <option>Corporate</option>
-                                <option>Complimentary</option>
-                                <option>Crew</option>
+                                <option value="">{translate("Standard")}</option>
+                                <option value={"VIP"}>{translate("VIP")}</option>
+                                <option value={"Corporate"}>{translate("Corporate")}</option>
+                                <option value={"Complimentary"}>{translate("Complimentary")}</option>
+                                <option value={"Crew"}>{translate("Crew")}</option>
                               </select>
                             </Field>
                           </div>
@@ -1079,20 +2039,21 @@ export function BookingDialog(props: {
                     </div>
                   )}
                 </div>
+                </>)}
               </div>
             </div>
 
-            {/* Quote rail — always visible on lg */}
+            {/* Quote rail - always visible on lg */}
             <aside className="flex w-full shrink-0 flex-col border-t border-zinc-200 bg-zinc-50 lg:w-80 lg:border-l lg:border-t-0 xl:w-[22rem]">
               <div className="flex-1 overflow-y-auto px-6 py-5 md:px-7">
                 <div className="mb-4 flex items-center justify-between">
                   <h3 className="text-xs font-semibold uppercase tracking-wider text-zinc-500">
-                    Quote
+                    {t("Quote")}
                   </h3>
                   {quoting && (
                     <Loader2
                       className="size-4 animate-spin text-zinc-400"
-                      aria-label="Updating quote"
+                      aria-label={t("Updating quote")}
                     />
                   )}
                 </div>
@@ -1101,26 +2062,48 @@ export function BookingDialog(props: {
                   <div className="space-y-2.5 text-[15px]">
                     <div className="flex justify-between gap-3 text-zinc-600">
                       <span className="min-w-0 truncate">
-                        {roomTypeName} · {quote.nights} night
-                        {quote.nights === 1 ? "" : "s"}
+                        {roomTypeName} ·{" "}
+                        {quote.day_use
+                          ? t("Day use {from}-{to}", { from: slot.from, to: slot.to })
+                          : translate("{v0} night{v1}", { v0: String(quote.nights), v1: String(quote.nights === 1 ? "" : "s") })}
                       </span>
                       <span className="shrink-0 tabular-nums">
                         {cur()}
                         {inr(quote.room_total)}
                       </span>
                     </div>
+                    {(quote.over_capacity_total ?? 0) > 0 && (
+                      <div className="flex justify-between text-zinc-600">
+                        <span>{t("Extra guests")}</span>
+                        <span className="tabular-nums">
+                          {cur()}
+                          {inr(quote.over_capacity_total ?? 0)}
+                        </span>
+                      </div>
+                    )}
                     {quote.meal_total > 0 && (
                       <div className="flex justify-between text-zinc-600">
-                        <span>Meals</span>
+                        <span>{t("Meals")}</span>
                         <span className="tabular-nums">
                           {cur()}
                           {inr(quote.meal_total)}
                         </span>
                       </div>
                     )}
+                    {(quote.pet_charge || 0) > 0 && (
+                      <div className="flex justify-between text-zinc-600">
+                        <span>
+                          {t("Pets")} × {form.pets}
+                        </span>
+                        <span className="tabular-nums">
+                          {cur()}
+                          {inr(quote.pet_charge || 0)}
+                        </span>
+                      </div>
+                    )}
                     {quote.discount > 0 && (
                       <div className="flex justify-between font-medium text-emerald-700">
-                        <span>Voucher</span>
+                        <span>{t("Voucher")}</span>
                         <span className="tabular-nums">
                           −{cur()}
                           {inr(quote.discount)}
@@ -1128,7 +2111,9 @@ export function BookingDialog(props: {
                       </div>
                     )}
                     <div className="flex justify-between text-zinc-600">
-                      <span>GST {quote.tax_percent}%</span>
+                      <span>
+                        {loc.tax_label} {quote.tax_percent}%
+                      </span>
                       <span className="tabular-nums">
                         {cur()}
                         {inr(quote.tax_amount)}
@@ -1140,8 +2125,7 @@ export function BookingDialog(props: {
                           key={i}
                           className="flex justify-between gap-3 text-zinc-600"
                         >
-                          <span className="min-w-0 truncate">
-                            Room {i + 2} ·{" "}
+                          <span className="min-w-0 truncate">{translate("Room ")}{i + 2} ·{" "}
                             {options?.room_types.find(
                               (rt) => rt.name === moreRooms[i]?.room_type,
                             )?.room_type_name ?? ""}
@@ -1155,7 +2139,9 @@ export function BookingDialog(props: {
                     )}
                     {addonsGross > 0 && (
                       <div className="flex justify-between text-zinc-600">
-                        <span>Add-ons (incl. GST)</span>
+                        <span>
+                          {t("Add-ons (incl. {tax})", { tax: loc.tax_label })}
+                        </span>
                         <span className="tabular-nums">
                           {cur()}
                           {inr(addonsGross)}
@@ -1165,52 +2151,83 @@ export function BookingDialog(props: {
 
                     <div className="mt-3 rounded-xl border border-zinc-200 bg-white px-4 py-3.5 shadow-sm">
                       <div className="flex items-baseline justify-between gap-2">
-                        <span className="text-sm font-medium text-zinc-500">
-                          Total
-                          {moreRooms.length > 0 ? " · all rooms" : ""}
-                        </span>
+                        <span>{t("Total")}{moreRooms.length > 0 ? t(" · all rooms") : ""}</span>
                         <span className="text-3xl font-semibold tabular-nums tracking-tight text-zinc-900">
                           {cur()}
                           {inr(grandTotal)}
                         </span>
                       </div>
                       <p className="mt-1 text-xs text-zinc-400">
-                        {form.check_in_date} → {checkOut}
+                        {dayUse
+                          ? `${form.check_in_date} · ${slot.from}-${slot.to}`
+                          : `${form.check_in_date} → ${checkOut}`}
                       </p>
                     </div>
 
                     {options?.property && (
                       <p className="pt-1 text-xs leading-relaxed text-zinc-500">
-                        {(options.property.cancellation_fee || "None") === "None"
-                          ? "Free cancellation."
-                          : `Free cancellation until ${cancelCutoff}; after that the ${String(options.property.cancellation_fee).toLowerCase()} is charged.`}
+                        {cancelText}
                         {(options.property.no_show_charge || "None") !== "None" &&
-                          ` No-show: ${String(options.property.no_show_charge).toLowerCase()} charged.`}
+                          translate(" No-show: {v0} charged.", { v0: String(String(options.property.no_show_charge).toLowerCase()) })}
                         {(options.property.deposit_pct ?? 0) > 0 &&
-                          ` Deposit expected now: ${cur()}${inr((grandTotal * options.property.deposit_pct) / 100)} (${options.property.deposit_pct}%).`}
+                          translate(" Deposit expected now: {v0}{v1} ({v2}%).", { v0: String(cur()), v1: String(inr((grandTotal * options.property.deposit_pct) / 100)), v2: String(options.property.deposit_pct) })}
                       </p>
                     )}
                   </div>
                 ) : (
                   <p className="text-sm text-zinc-400">
-                    {error ? "Fix the issue below to see a price." : "…"}
+                    {error ? t("Fix the issue below to see a price.") : "…"}
                   </p>
                 )}
 
                 {error && (
                   <div className="mt-4 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2.5 text-sm text-rose-700">
-                    {error}
+                    {translate(error)}
                   </div>
                 )}
               </div>
 
               <div className="shrink-0 space-y-2 border-t border-zinc-200 bg-white px-6 py-4 md:px-7">
+                {walkIn ? (
+                  <>
+                    {tillClosed && (
+                      <>
+                        <TillCard till={till} onOpened={() => void refreshTill()}
+                          purpose={t("to take the walk-in's payment")} />
+                        <p className="text-xs text-zinc-500">
+                          {t("Or set the amount to 0: the stay goes on the bill and the guest pays at check-out.")}
+                        </p>
+                      </>
+                    )}
+                    <Button
+                      className="w-full justify-center py-2.5 text-base"
+                      disabled={walkInBlocked || tillClosed}
+                      onClick={() => submitWalkIn()}
+                    >
+                      {busy
+                        ? t("Saving…")
+                        : payAmount > 0
+                          ? t("Collect {amt} and continue to check-in", {
+                              amt: `${cur()}${inr(payAmount)}`,
+                            })
+                          : t("Continue to check-in")}
+                    </Button>
+                    <Button
+                      variant="outline"
+                      className="w-full justify-center"
+                      onClick={props.onClose}
+                    >
+                      {t("Cancel")}
+                    </Button>
+                  </>
+                ) : (
+                <>
                 <Button
                   className="w-full justify-center py-2.5 text-base"
-                  disabled={busy || !form.guest_name || !quote}
+                  disabled={busy || !form.guest_name || !quote || pastCheckIn || badPhone || badSlot || blacklistBlocked || creditBlocked || extraNeedsReason}
                   onClick={() => submit()}
                 >
-                  {busy ? "Booking…" : "Confirm booking"}
+                  {busy ? t("Booking…") : t("Confirm booking")}
                 </Button>
                 <div className="grid grid-cols-2 gap-2">
                   <Button
@@ -1218,23 +2235,36 @@ export function BookingDialog(props: {
                     className="justify-center"
                     onClick={props.onClose}
                   >
-                    Cancel
+                    {t("Cancel")}
                   </Button>
                   <Button
                     variant="outline"
                     className="justify-center"
-                    disabled={busy || !form.guest_name}
+                    disabled={busy || !form.guest_name || pastCheckIn || badPhone || badSlot || blacklistBlocked || extraNeedsReason}
                     onClick={() => submit(true)}
-                    title="Park this stay with no room; promote when inventory frees"
+                    title={t("Park this stay with no room; promote when inventory frees")}
                   >
-                    Waitlist
+                    {t("Waitlist")}
                   </Button>
                 </div>
+                </>
+                )}
               </div>
             </aside>
           </div>
         )}
       </div>
+      {guidedCheckIn && (
+        <CheckInDialog
+          reservation={guidedCheckIn}
+          onClose={() => setGuidedCheckIn(null)}
+          onDone={() => {
+            setGuidedCheckIn(null)
+            setWalkInCheckedIn(true)
+            props.onBooked()
+          }}
+        />
+      )}
     </div>
   )
 }

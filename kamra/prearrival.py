@@ -10,18 +10,23 @@ send the link by hand from the arrivals board too."""
 import frappe
 
 
-def run_prearrival_outreach(horizon_days: int = 2):
-	"""Daily pass across every active property that opted in."""
+def run_prearrival_outreach(horizon_days: int | None = None):
+	"""Daily pass across every active property that opted in. Each property
+	picks how far ahead to look (Settings -> Front Desk)."""
 	from frappe.utils import add_days, nowdate
+
 	from kamra.api import send_precheckin_link
+	from kamra.settings import get_setting
 
 	today = nowdate()
-	horizon = add_days(today, horizon_days)
 	sent = 0
 	props = frappe.get_all(
 		"Property", filters={"disabled": 0, "auto_send_checkin_links": 1},
 		pluck="name")
 	for prop in props:
+		days = horizon_days if horizon_days is not None else int(
+			get_setting(prop, "prearrival_horizon_days"))
+		horizon = add_days(today, days)
 		arrivals = frappe.get_all(
 			"Reservation",
 			filters={"property": prop, "status": "Confirmed",

@@ -15,9 +15,24 @@
   "room_charges_posted",
   "amount_posted",
   "no_shows_flagged",
+  "late_arrivals_held",
+  "no_show_fees_waived",
   "folios_opened",
+  "sb_checks",
+  "run_trigger",
+  "run_by",
+  "column_break_b",
+  "exceptions",
+  "acknowledgements",
+  "sb_eod",
+  "auditor_notes",
+  "column_break_c",
+  "eod_step",
+  "eod_state",
   "sb_log",
-  "log"
+  "log",
+  "sb_pack",
+  "report_pack"
  ],
  "fields": [
   {
@@ -40,7 +55,7 @@
    "fieldtype": "Select",
    "in_list_view": 1,
    "label": "Status",
-   "options": "Completed\nCompleted with Warnings"
+   "options": "Completed\nCompleted with Warnings\nDraft"
   },
   {
    "fieldname": "column_break_a",
@@ -67,9 +82,89 @@
    "read_only": 1
   },
   {
+   "description": "Arrivals due on the closed date held as Due In (late arrival or ETA after the audit). The next audit marks them No Show if they still have not arrived.",
+   "fieldname": "late_arrivals_held",
+   "fieldtype": "Int",
+   "label": "Late Arrivals Held",
+   "read_only": 1
+  },
+  {
+   "fieldname": "no_show_fees_waived",
+   "fieldtype": "Int",
+   "label": "No-show Fees Waived (OTA)",
+   "read_only": 1
+  },
+  {
    "fieldname": "folios_opened",
    "fieldtype": "Int",
    "label": "Folios Opened",
+   "read_only": 1
+  },
+  {
+   "fieldname": "sb_checks",
+   "fieldtype": "Section Break",
+   "label": "Pre-checks"
+  },
+  {
+   "default": "Manual",
+   "fieldname": "run_trigger",
+   "fieldtype": "Select",
+   "label": "Trigger",
+   "options": "Manual\nScheduled\nSystem",
+   "read_only": 1,
+   "description": "Manual: run from Billing, the API or an agent. Scheduled: the 03:00 job. System: an internal call."
+  },
+  {
+   "fieldname": "run_by",
+   "fieldtype": "Link",
+   "label": "Run By",
+   "options": "User",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_b",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "exceptions",
+   "fieldtype": "Int",
+   "label": "Blocking Checks Open",
+   "read_only": 1,
+   "description": "Blocking pre-checks that still had items when the audit ran (acknowledged by a supervisor, or reported by the scheduled run)."
+  },
+  {
+   "fieldname": "acknowledgements",
+   "fieldtype": "Long Text",
+   "label": "Acknowledgements (JSON)",
+   "read_only": 1,
+   "description": "Blocking checks acknowledged for this run: key, count, reason, who and when."
+  },
+  {
+   "fieldname": "sb_eod",
+   "fieldtype": "Section Break",
+   "label": "End of Day"
+  },
+  {
+   "fieldname": "auditor_notes",
+   "fieldtype": "Long Text",
+   "label": "Notes for the Manager",
+   "description": "The night auditor's notes (weather, incidents, hand-over) - printed on the audit pack."
+  },
+  {
+   "fieldname": "column_break_c",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "1",
+   "fieldname": "eod_step",
+   "fieldtype": "Int",
+   "label": "End of Day Step",
+   "read_only": 1
+  },
+  {
+   "fieldname": "eod_state",
+   "fieldtype": "Long Text",
+   "label": "End of Day Progress (JSON)",
    "read_only": 1
   },
   {
@@ -82,12 +177,25 @@
    "fieldtype": "Small Text",
    "label": "Log",
    "read_only": 1
+  },
+  {
+   "fieldname": "sb_pack",
+   "fieldtype": "Section Break",
+   "label": "Audit Pack",
+   "collapsible": 1
+  },
+  {
+   "fieldname": "report_pack",
+   "fieldtype": "Long Text",
+   "label": "Report Pack (JSON)",
+   "read_only": 1,
+   "description": "The saved audit pack - open it from Finance → End of Day → Audit history."
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-07-04 17:55:11.005571",
+ "modified": "2026-10-15 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Kamra",
  "name": "Night Audit Run",
@@ -137,6 +245,12 @@
    "read": 1,
    "report": 1,
    "role": "Kamra Agent"
+  },
+  {
+   "read": 1,
+   "report": 1,
+   "print": 1,
+   "role": "Night Auditor"
   }
  ],
  "row_format": "Dynamic",

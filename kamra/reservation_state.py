@@ -13,6 +13,11 @@ from __future__ import annotations
 # kamra.siu.availability.LIVE_STATUSES).
 LIVE_STATUSES = ("Confirmed", "Checked In", "Held", "Pending Payment")
 
+# How long an identical agent booking (no idempotency_key) counts as a retry
+# of the first one. Lives here, not in api.py, so the frappe-free MCP
+# registry can quote it in the tool docs.
+AGENT_DUPLICATE_WINDOW_MINUTES = 10
+
 NON_INVENTORY = (
 	"Waitlist",
 	"Inquiry",
@@ -145,6 +150,12 @@ def find_by_idempotency(property: str, key: str) -> str | None:
 	)
 
 
+# What expire_holds records on a lapsed hold: an allowed cancellation_reason
+# option plus the specific cause in the note.
+HOLD_EXPIRY_REASON = "Other"
+HOLD_EXPIRY_NOTE = "Hold / payment window expired"
+
+
 def expire_holds() -> dict:
 	"""Release Held / Pending Payment reservations past hold_expires_on."""
 	import frappe
@@ -164,18 +175,31 @@ def expire_holds() -> dict:
 	)
 	expired = 0
 	for name in rows:
+		# one savepoint per hold: a hold that fails to save is rolled back on
+		# its own and logged, and the job carries on releasing the others
+		savepoint = "kamra_expire_hold"
 		try:
+			frappe.db.savepoint(savepoint)
 			frappe.flags.kamra_status_transition = True
 			frappe.flags.kamra_cancelling = True
 			doc = frappe.get_doc("Reservation", name)
 			doc.status = "Cancelled"
-			doc.cancellation_reason = "Hold / payment window expired"
+			# cancellation_reason is a fixed list (reports group by it); the
+			# specific cause goes in the free-text note
+			doc.cancellation_reason = HOLD_EXPIRY_REASON
+			doc.cancellation_note = HOLD_EXPIRY_NOTE
 			doc.cancelled_on = now
 			doc.hold_expires_on = None
 			doc.save(ignore_permissions=True)
 			expired += 1
 		except Exception:
-			frappe.log_error(title=f"Hold expiry failed for {name}")
+			try:
+				frappe.db.rollback(save_point=savepoint)
+			except Exception:
+				pass  # the savepoint itself failed; nothing of this hold to undo
+			frappe.log_error(title=f"Hold expiry failed for {name}",
+			                 reference_doctype="Reservation",
+			                 reference_name=name)
 		finally:
 			frappe.flags.kamra_status_transition = False
 			frappe.flags.kamra_cancelling = False

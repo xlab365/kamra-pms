@@ -23,13 +23,17 @@
   "sb_id",
   "id_type",
   "id_number",
+  "id_place_of_issue",
+  "id_issue_date",
+  "id_expiry_date",
   "column_break_b",
   "nationality",
   "address_line",
   "city",
   "guest_notes",
   "id_file",
-  "address_proof_file"
+  "address_proof_file",
+  "photo"
  ],
  "fields": [
   {
@@ -83,9 +87,9 @@
   },
   {
    "fieldname": "id_type",
-   "fieldtype": "Select",
+   "fieldtype": "Data",
    "label": "Id Type",
-   "options": "\nAadhaar\nPassport\nDriving License\nVoter ID\nOther"
+   "description": "One of the ID types the property's country pack accepts"
   },
   {
    "fieldname": "id_number",
@@ -93,12 +97,27 @@
    "label": "Id Number"
   },
   {
+   "fieldname": "id_place_of_issue",
+   "fieldtype": "Data",
+   "label": "ID Place of Issue"
+  },
+  {
+   "fieldname": "id_issue_date",
+   "fieldtype": "Date",
+   "label": "ID Date of Issue"
+  },
+  {
+   "fieldname": "id_expiry_date",
+   "fieldtype": "Date",
+   "label": "ID Date of Expiry",
+   "description": "Shown as a warning at check-in when passed; it never blocks an arrival."
+  },
+  {
    "fieldname": "column_break_b",
    "fieldtype": "Column Break",
    "label": "Column Break B"
   },
   {
-   "default": "Indian",
    "fieldname": "nationality",
    "fieldtype": "Data",
    "label": "Nationality"
@@ -144,6 +163,12 @@
    "description": "Private photo/scan of the address proof. Deleted at checkout under Verify & Discard retention."
   },
   {
+   "fieldname": "photo",
+   "fieldtype": "Attach Image",
+   "label": "Photo",
+   "description": "Optional. Taken at the desk with the guest's consent, or uploaded. Stored privately."
+  },
+  {
    "fieldname": "guest_category",
    "fieldtype": "Select",
    "label": "Guest Category",
@@ -166,7 +191,7 @@
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-07-04 20:02:58.739313",
+ "modified": "2026-10-21 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Kamra",
  "name": "Guest",
@@ -220,6 +245,12 @@
    "report": 1,
    "role": "Kamra Agent",
    "write": 1
+  },
+  {
+   "read": 1,
+   "report": 1,
+   "print": 1,
+   "role": "Night Auditor"
   }
  ],
  "row_format": "Dynamic",
@@ -228,5 +259,6 @@
  "sort_order": "DESC",
  "states": [],
  "title_field": "full_name",
- "track_changes": 1
+ "track_changes": 1,
+ "image_field": "photo"
 }

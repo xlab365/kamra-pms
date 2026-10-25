@@ -34,8 +34,12 @@ def registry(property: str):
 	"""Everything on offer, grouped, with this property's live status."""
 	ai = frappe.db.get_value(
 		"AI Assistant Settings", {"property": property}, "enabled")
+	from kamra import localization as loc
+
 	pay = frappe.db.get_value(
-		"Payment Gateway Settings", {"property": property}, "enabled")
+		"Payment Gateway Settings", {"property": property},
+		["enabled", "gateway"], as_dict=True) or {}
+	gateways = loc.payment_gateways(loc.pack_for(property))
 	me = frappe.session.user
 	has_key = bool(frappe.db.get_value("User", me, "api_key"))
 
@@ -48,7 +52,9 @@ def registry(property: str):
 				_module("Housekeeping", "Room board and the phone app."),
 				_module("Operations", "Guest requests and shifts."),
 				_module("Finance", "Folios, invoices, night audit."),
-				_module("Copilot", "Chat with your PMS using your own AI key."),
+				_module("Copilot",
+				        "In-app Kamra Agent with your own AI key "
+				        "(OpenAI, Gemini, Groq, OpenRouter…)."),
 				_module("Events & Groups", "Banquets, blocks and pickup."),
 				_module("Revenue", "Rates, seasons, offers, partners."),
 				_module("POS",
@@ -59,8 +65,7 @@ def registry(property: str):
 			"category": "Guest messaging (WhatsApp)",
 			"blurb": "WhatsApp is the guest channel in India, Southeast Asia "
 			         "and the Gulf. The Meta Cloud API integration is open "
-			         "source and included - bring your own number. Managed "
-			         "gateway and the AI concierge are connected services.",
+			         "source and included - bring your own number.",
 			"cards": [
 				_module("WhatsApp - Meta Cloud API",
 				        "Booking confirmations, self check-in links, payment "
@@ -118,30 +123,40 @@ def registry(property: str):
 		{
 			"category": "Bring your own AI",
 			"blurb": "Kamra ships the governed tools + MCP; you bring the "
-			         "intelligence. Connect your own Claude (it acts as you, "
-			         "scoped to your role), or power the in-app Copilot chat "
-			         "with your OpenAI key.",
+			         "intelligence. Connect Claude Desktop over MCP, or power "
+			         "the in-app Agent with any OpenAI-compatible key "
+			         "(OpenAI, Gemini, Groq, OpenRouter, Ollama…).",
 			"cards": [
 				_connector("Connect Claude (MCP)", "claude",
-				           "Click Connect Claude — it acts as you, with your "
-				           "role limits, over a hosted MCP endpoint.",
+				           "Claude the app acts as you over hosted MCP — "
+				           "not an Anthropic API key in Settings. Role limits "
+				           "and the Activity Log still apply.",
 				           action="route", route="/assistant",
 				           status="connected" if has_key else "available",
 				           detail="Your connector" if has_key else None),
-				_connector("OpenAI key", "openai",
-				           "Power the in-app Copilot chat with your own key.",
+				_connector("Bring your own model", "openai",
+				           "In-app Kamra Agent: pick OpenAI, Gemini, Groq, "
+				           "OpenRouter or Ollama, paste a key, Test connection.",
 				           action="route", route="/settings",
 				           status="connected" if ai else "configure"),
 			],
 		},
 		{
 			"category": "Payments",
-			"blurb": "Take deposits and settle bills online.",
+			"blurb": "Take deposits and settle bills online. The gateways on "
+			         "offer come with your country pack.",
 			"cards": [
-				_connector("Razorpay", "razorpay",
-				           "Payment links for balances and advances.",
+				_connector(g, g.lower(),
+				           f"Payment links for balances and advances, paid "
+				           f"into your own {g} account.",
 				           action="route", route="/settings",
-				           status="connected" if pay else "configure"),
+				           status="connected" if pay.get("enabled")
+				           and pay.get("gateway") == g else "configure")
+				for g in gateways
+			] or [
+				_module("Online payment links",
+				        "No gateway in your country pack yet - take "
+				        "payments at the desk.", planned=True),
 			],
 		},
 		{
@@ -165,7 +180,8 @@ def registry(property: str):
 			"blurb": "Tax, invoicing and government filing for where you "
 			         "operate. Install the pack for your country.",
 			"cards": [
-				_module("India", "GST slabs, SAC, GSTIN, GSTR-1, e-invoice.",
+				_module("India", "GST slabs, SAC, GSTIN, GSTR-1. "
+				        "Razorpay and Cashfree payment links.",
 				        detail="Included"),
 				_module("Indonesia",
 				        "PB1/PBJT regional hotel tax (flat, per-region rate), "

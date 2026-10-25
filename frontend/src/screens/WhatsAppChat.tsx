@@ -6,6 +6,8 @@ import { serverError } from "../lib/resource"
 import { toFullPath } from "../lib/routing"
 import { Button } from "../components/ui/button"
 import { cn } from "../lib/utils"
+import { useT, t as translate, uiDateLocale } from "../lib/i18n"
+
 
 /* The desk's WhatsApp inbox - threads on the left, the conversation on
    the right, replies into the guest's 24-hour session window. Modeled on
@@ -34,7 +36,7 @@ interface Msg {
 }
 
 const fmtTime = (d: string) =>
-  new Date(d.replace(" ", "T")).toLocaleString(undefined, {
+  new Date(d.replace(" ", "T")).toLocaleString(uiDateLocale(undefined), {
     day: "2-digit",
     month: "short",
     hour: "2-digit",
@@ -42,6 +44,7 @@ const fmtTime = (d: string) =>
   })
 
 export default function WhatsAppChat() {
+  const { t } = useT()
   const property = getCurrentProperty()
   const [threads, setThreads] = useState<Thread[]>([])
   const [active, setActive] = useState<string | null>(null)
@@ -116,18 +119,17 @@ export default function WhatsAppChat() {
       <header className="flex flex-wrap items-center gap-3">
         <div className="flex items-center gap-2">
           <MessageCircle className="size-5 text-brand-600" aria-hidden />
-          <h1 className="text-xl font-semibold tracking-tight">WhatsApp</h1>
+          <h1 className="text-xl font-semibold tracking-tight">{t("WhatsApp")}</h1>
         </div>
         <p className="text-sm text-zinc-500">
-          Guest conversations on your own number - confirmations go out
-          automatically, replies land here and on the desk queue.
+          {t("Guest conversations on your own number - confirmations go out automatically, replies land here and on the desk queue.")}
         </p>
         <Link
           to="/channels"
           className="ml-auto flex items-center gap-1.5 rounded-full border border-zinc-200 px-3 py-1.5 text-sm text-zinc-500 hover:bg-zinc-50 hover:text-zinc-700"
         >
           <Settings2 className="size-4" aria-hidden />
-          Connect a number
+          {t("Connect a number")}
         </Link>
       </header>
 
@@ -135,38 +137,36 @@ export default function WhatsAppChat() {
         <div className="rounded-2xl border border-dashed border-zinc-300 p-10 text-center">
           <MessageCircle className="mx-auto size-8 text-zinc-300" aria-hidden />
           <p className="mt-3 text-sm font-medium text-zinc-600">
-            No conversations yet
+            {t("No conversations yet")}
           </p>
           <p className="mx-auto mt-1 max-w-md text-sm text-zinc-500">
-            Connect your WhatsApp Business number under Channels and messages
-            will start flowing: booking confirmations and check-in links go
-            out on their own, and anything guests write appears here.
+            {t("Connect your WhatsApp Business number under Channels and messages will start flowing: booking confirmations and check-in links go out on their own, and anything guests write appears here.")}
           </p>
         </div>
       ) : (
         <div className="grid gap-4 lg:grid-cols-3">
           <div className="rounded-2xl border border-zinc-200 bg-white">
             <ul className="max-h-[70vh] divide-y divide-zinc-100 overflow-y-auto">
-              {threads.map((t) => (
-                <li key={t.number}>
+              {threads.map((thread) => (
+                <li key={thread.number}>
                   <button
-                    onClick={() => setActive(t.number)}
+                    onClick={() => setActive(thread.number)}
                     className={cn(
                       "w-full px-4 py-3 text-left transition hover:bg-zinc-50",
-                      active === t.number && "bg-brand-50/60",
+                      active === thread.number && "bg-brand-50/60",
                     )}
                   >
                     <div className="flex items-baseline justify-between gap-2">
                       <span className="truncate text-sm font-semibold text-zinc-800">
-                        {t.guest_name}
+                        {thread.guest_name}
                       </span>
                       <span className="shrink-0 text-[11px] text-zinc-400">
-                        {fmtTime(t.last_at)}
+                        {fmtTime(thread.last_at)}
                       </span>
                     </div>
                     <p className="mt-0.5 truncate text-xs text-zinc-500">
-                      {t.last_direction === "Outbound" && "You: "}
-                      {t.last_message}
+                      {thread.last_direction === "Outbound" && `${t("You")}: `}
+                      {thread.last_message}
                     </p>
                   </button>
                 </li>
@@ -190,7 +190,7 @@ export default function WhatsAppChat() {
                     rel="noreferrer"
                     className="ml-auto text-xs font-medium text-brand-700 hover:underline"
                   >
-                    Open stay →
+                    {t("Open stay →")}
                   </a>
                 )}
               </div>
@@ -214,8 +214,7 @@ export default function WhatsAppChat() {
                           ? "text-brand-100"
                           : "text-zinc-400",
                       )}
-                    >
-                      template · {m.template_name}
+                    >{translate("template · ")}{m.template_name}
                     </p>
                   )}
                   <p className="whitespace-pre-wrap">{m.content}</p>
@@ -228,10 +227,10 @@ export default function WhatsAppChat() {
                     )}
                   >
                     {fmtTime(m.creation)}
-                    {m.direction === "Outbound" && ` · ${m.status}`}
+                    {m.direction === "Outbound" && ` · ${translate(m.status)}`}
                   </p>
                   {m.status === "Failed" && m.error && (
-                    <p className="mt-0.5 text-[11px] text-rose-200">{m.error}</p>
+                    <p className="mt-0.5 text-[11px] text-rose-200">{translate(m.error)}</p>
                   )}
                 </div>
               ))}
@@ -240,16 +239,14 @@ export default function WhatsAppChat() {
             <div className="border-t border-zinc-100 p-3">
               {!sessionOpen && (
                 <p className="mb-2 text-xs text-amber-700">
-                  No guest message in the last 24 hours - WhatsApp only
-                  delivers templates outside the session window. A guest
-                  writing to you reopens it.
+                  {t("No guest message in the last 24 hours - WhatsApp only delivers templates outside the session window. A guest writing to you reopens it.")}
                 </p>
               )}
-              {error && <p className="mb-2 text-xs text-rose-600">{error}</p>}
+              {error && <p className="mb-2 text-xs text-rose-600">{translate(error)}</p>}
               <div className="flex gap-2">
                 <input
                   className="flex-1 rounded-xl border border-zinc-300 bg-white px-3.5 py-2 text-sm focus:outline-2 focus:outline-offset-1 focus:outline-brand-600"
-                  placeholder="Reply to the guest…"
+                  placeholder={t("Reply to the guest…")}
                   value={draft}
                   onChange={(e) => setDraft(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && sendReply()}
@@ -257,7 +254,7 @@ export default function WhatsAppChat() {
                 />
                 <Button disabled={busy || !draft.trim() || !active} onClick={sendReply}>
                   <Send className="size-4" aria-hidden />
-                  Send
+                  {t("Send")}
                 </Button>
               </div>
             </div>

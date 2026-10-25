@@ -398,6 +398,52 @@ def execute():
 			}).insert(ignore_permissions=True)
 			added_item += 1
 
+	# kitchen printers: main kitchen takes every Terrace station; the bar
+	# prints its own drinks. Idempotent by printer_name.
+	from kamra import printing
+	terrace = frappe.db.get_value(
+		"POS Outlet", {"property": PROPERTY, "outlet_name": "The Terrace Restaurant"})
+	bar_outlet = frappe.db.get_value(
+		"POS Outlet", {"property": PROPERTY, "outlet_name": "Poolside Bar"})
+	added_printer = 0
+	if terrace or bar_outlet:
+		existing = {p.printer_name: p.name
+		            for p in printing.printers(PROPERTY)}
+		specs = []
+		if terrace:
+			specs.append(("Main kitchen",
+			              [{"outlet": terrace, "prep_station": ""}]))
+		if bar_outlet:
+			specs.append(("Bar",
+			              [{"outlet": bar_outlet, "prep_station": "Bar"}]))
+		bar_name = existing.get("Bar")
+		for pname, routes in specs:
+			if pname in existing:
+				continue
+			out = printing.save_printer(PROPERTY, {
+				"printer_name": pname,
+				"connection": "Print station",
+				"paper_width": "80 mm",
+				"copies": 1,
+				"routes": routes,
+				"fallback_printer": bar_name if pname == "Main kitchen" and bar_name else None,
+			})
+			existing[pname] = out["name"]
+			if pname == "Bar":
+				bar_name = out["name"]
+			added_printer += 1
+		# point Main kitchen at the Bar once both exist
+		main = existing.get("Main kitchen")
+		if main and bar_name and main != bar_name:
+			printing.save_printer(PROPERTY, {
+				"printer_name": "Main kitchen",
+				"connection": "Print station",
+				"paper_width": "80 mm",
+				"copies": 1,
+				"fallback_printer": bar_name,
+				"routes": [{"outlet": terrace, "prep_station": ""}] if terrace else [],
+			}, name=main)
+
 	# kitchen stock: the ingredient master, then a recipe per dish, then what
 	# each outlet opens with
 	from kamra import inventory
@@ -471,30 +517,49 @@ def execute():
 
 	# operations: guest requests / tickets across teams and states, so the
 	# Operations screens, SLA report and dashboards have a story to tell
+	# Room numbers are ones seed_demo creates (101-106, 201-205, 301-303)
+	# and each ticket links the room its subject names.
 	TICKETS = [
-		("Extra towels for 204", "Housekeeping", "Medium", "Open", "WhatsApp"),
-		("AC not cooling in 310", "Maintenance", "Urgent", "In Progress", "Manual"),
-		("Airport cab at 6 AM", "Concierge", "High", "Open", "Voice"),
-		("Late checkout request — 112", "Front Desk", "Medium", "Resolved", "Manual"),
-		("Crib for the baby, room 218", "Housekeeping", "High", "Resolved", "AI Agent"),
-		("Wi-Fi drops on 3rd floor", "Maintenance", "High", "Open", "QR"),
-		("Birthday cake for table F2 tonight", "Room Service", "Medium", "In Progress", "Manual"),
-		("Noise complaint — corridor, 2nd floor", "Complaint", "Urgent", "Resolved", "Manual"),
-		("Iron & board to 415", "Housekeeping", "Low", "Closed", "WhatsApp"),
-		("Spare adapter (Type G) needed", "Concierge", "Low", "Open", "Manual"),
+		("Extra towels for 204", "Housekeeping", "Medium", "Open", "WhatsApp", "204"),
+		("AC not cooling in 302", "Maintenance", "Urgent", "In Progress", "Manual", "302"),
+		("Airport cab at 6 AM", "Concierge", "High", "Open", "Voice", "101"),
+		("Late checkout request — 105", "Front Desk", "Medium", "Resolved", "Manual", "105"),
+		("Crib for the baby, room 203", "Housekeeping", "High", "Resolved", "AI Agent", "203"),
+		("Wi-Fi drops on 3rd floor", "Maintenance", "High", "Open", "QR", None),
+		("Birthday cake for table F2 tonight", "Room Service", "Medium", "In Progress", "Manual", None),
+		("Noise complaint — corridor, 2nd floor", "Complaint", "Urgent", "Resolved", "Manual", None),
+		("Iron & board to 301", "Housekeeping", "Low", "Closed", "WhatsApp", "301"),
+		("Spare adapter (Type G) needed", "Concierge", "Low", "Open", "Manual", "102"),
 	]
+	# subjects older seeds used for rooms that never existed
+	RENAMED = {
+		"AC not cooling in 310": "AC not cooling in 302",
+		"Late checkout request — 112": "Late checkout request — 105",
+		"Crib for the baby, room 218": "Crib for the baby, room 203",
+		"Iron & board to 415": "Iron & board to 301",
+	}
+	room_of = {s: r for s, *_, r in TICKETS}
+
+	def _room(number):
+		if not number:
+			return None
+		return frappe.db.get_value(
+			"Room", {"property": PROPERTY, "room_number": number})
+
+	for old, new in RENAMED.items():
+		for name in frappe.get_all("Service Ticket", pluck="name", filters={
+				"property": PROPERTY, "subject": old}):
+			frappe.db.set_value("Service Ticket", name, {
+				"subject": new, "room": _room(room_of[new])})
 	added_ticket = 0
-	rooms = frappe.get_all("Room", filters={"property": PROPERTY},
-	                       fields=["name"], limit=12)
-	for i, (subject, cat, prio, status, source) in enumerate(TICKETS):
+	for subject, cat, prio, status, source, number in TICKETS:
 		if frappe.db.exists("Service Ticket",
 		                    {"property": PROPERTY, "subject": subject}):
 			continue
 		t = frappe.get_doc({
 			"doctype": "Service Ticket", "property": PROPERTY,
 			"subject": subject, "category": cat, "priority": prio,
-			"source": source,
-			"room": rooms[i % len(rooms)].name if rooms else None,
+			"source": source, "room": _room(number),
 		})
 		t.insert(ignore_permissions=True)
 		if status != "Open":
@@ -507,7 +572,7 @@ def execute():
 	added_ho = 0
 	HANDOVERS = [
 		(add_days(nowdate(), -1), "Morning", "Closed", 5000, 42350, 1200,
-		 "Two early check-ins done. 310 AC ticket open for maintenance."),
+		 "Two early check-ins done. 302 AC ticket open for maintenance."),
 		(add_days(nowdate(), -1), "Evening", "Closed", 8000, 61200, 800,
 		 "Full house tonight. Cab booked for 6 AM airport drop (ticket)."),
 		(nowdate(), "Morning", "Open", 6000, 18500, 0,
@@ -553,6 +618,7 @@ def execute():
 	frappe.db.commit()  # nosemgrep: frappe-manual-commit -- batch/seed/migration script runs outside the request cycle; explicit commit persists the staged writes
 	print(f"Showcase seed: +{added_exp} experiences, +{added_venue} venues, "
 	      f"+{added_outlet} outlets, +{added_item} menu items, "
+	      f"+{added_printer} printers, "
 	      f"+{added_rate} laundry rates, +{added_ticket} tickets, "
 	      f"+{added_ho} handovers, +{added_lnd} laundry orders, {added_bq} "
 	      f"{extra} on '{PROPERTY}'.")
@@ -876,7 +942,12 @@ def seed_sample_content():
 					"adults": 2, "auto_price": 1, "source": "Website",
 					"planned_check_in_time": eta,
 					"planned_check_out_time": etd,
-				}).insert(ignore_permissions=True)
+				})
+				# departures / in-house stays arrived before today: seed
+				# history, exempt from the past-check-in guard by flag
+				if ci_off < 0:
+					res.flags.allow_past_check_in = True
+				res.insert(ignore_permissions=True)
 				if check_in:
 					res.status = "Checked In"
 					res.save(ignore_permissions=True)

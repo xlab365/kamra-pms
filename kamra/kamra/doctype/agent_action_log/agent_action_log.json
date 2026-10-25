@@ -76,8 +76,9 @@
   {
    "fieldname": "action_channel",
    "fieldtype": "Select",
+   "description": "Where the action came from. Chat = the in-app Kamra Agent copilot; MCP = an external AI (Claude) over MCP.",
    "label": "Channel",
-   "options": "\nDesk\nVoice\nWhatsApp\nAPI"
+   "options": "\nDesk\nVoice\nWhatsApp\nAPI\nChat\nMCP"
   },
   {
    "fieldname": "sb_ref",
@@ -165,7 +166,7 @@
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-07-04 13:57:42.075855",
+ "modified": "2026-10-15 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Kamra",
  "name": "Agent Action Log",

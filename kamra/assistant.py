@@ -10,10 +10,15 @@ Agent Action Log. If the model is wrong, the tools refuse.
 import json
 
 import frappe
+import requests
+from frappe.utils import cint, nowdate
+
+from kamra.assistant_privacy import processor_disclosure, scrub_for_llm
 from kamra.authz import require_roles
 from kamra.llm_compat import chat_payload, retry_chat_payload
-import requests
-from frappe.utils import nowdate
+# one set of booking-reference parameter docs for MCP and the copilot
+from kamra.mcp_tools import (MEAL_PLAN_PARAM,
+                             RATE_PLAN_PARAM, ROOM_TYPE_PARAM, is_replay)
 
 MAX_TOOL_ROUNDS = 6
 TIMEOUT = 60
@@ -38,7 +43,10 @@ Rules:
 - To remove or fix a wrong charge: get_folio to see the charge lines, then
   void_charge with that line's `name` on an open folio (use apply_allowance
   once a folio is invoiced). Do not "offset with a zero charge" or move it.
-- A room number (e.g. 101) is NOT a reservation id (e.g. RES-2026-00021).
+- A room number (e.g. 101) is NOT a reservation id (which looks like
+  RES-YYYY-NNNNN). Never make one up: use only ids a tool returned.
+- When you look up or act on a stay, write its reservation id in your reply.
+  Later messages only see your replies, not earlier tool results.
   To act on a guest, first find the reservation with find_reservations (by
   guest name, room number, or status), then use its `name` as the reservation
   id for check_out / get_folio / stay_detail / cancel.
@@ -46,6 +54,20 @@ Rules:
   with the matching status (Checked Out, Checked In, Confirmed, Cancelled,
   No Show). front_desk_today is only *today's* board.
 - Never say you can't find something before calling find_reservations.
+- Once a stay is quoted and staff say book it / create it / go ahead, call
+  create_booking. Do not quote again unless the dates, room type, rate or
+  guests changed.
+- "Deposit required" in a quote is the property's refundable security
+  deposit, collected at check-in. It never blocks a booking. When staff say
+  to skip or waive it, create the booking, then call waive_security_deposit
+  on it with their words as the reason (e.g. "Waived for now on staff
+  request"). Say the booking number and that the deposit is waived.
+- Never record a payment or a security deposit unless staff say the money
+  was received (how much and how). Booking a stay collects nothing.
+- Checking out or collecting a balance: call checkout_context first. Its
+  total owed includes nights check-out still posts, so it can be more than
+  the stay's balance so far. Record the payment for that amount on the folio
+  it names, then call check_out once.
 - Before cancelling, run the cancellation preview and state the fee.
 - Confirm irreversible actions (cancel, checkout with balance, voiding a
   charge) in one short question before calling the tool.
@@ -55,16 +77,50 @@ Rules:
 # tool name → (kamra.api function, description, JSON-schema params,
 # inject property?, mutating? - mutating calls are audit-logged)
 EXTRA_TOOLS = {
+	"amend_stay_preview": (
+		"amend_stay_preview",
+		"What new dates would do to a stay's bill (current vs new total, new "
+		"nightly rates). Read-only - call before amend_stay.",
+		{"reservation": {"type": "string"}, "check_in_date": {"type": "string"},
+		 "check_out_date": {"type": "string"}}, False, False),
 	"amend_stay": (
 		"amend_stay",
-		"Change a stay's dates (extend/shorten). Re-prices and re-checks overlaps.",
+		"Change a stay's dates (extend/shorten). Re-prices and re-checks "
+		"overlaps. When the total changes it is refused unless confirm_price=1: "
+		"run amend_stay_preview, tell the user the new price, and only pass "
+		"confirm_price=1 once they agree.",
 		{"reservation": {"type": "string"}, "check_in_date": {"type": "string"},
-		 "check_out_date": {"type": "string"}}, False, True),
+		 "check_out_date": {"type": "string"},
+		 "confirm_price": {"type": "integer"}}, False, True),
 	"move_room": (
 		"move_reservation",
-		"Move a stay to a different room.",
-		{"reservation": {"type": "string"}, "new_room": {"type": "string"}},
+		"Move OR upgrade a stay to a different room - a same-type swap, or a "
+		"different type (upgrade/downgrade, e.g. Standard -> Suite). The stay's "
+		"room type follows the room it moves into. Call movable_rooms first to "
+		"pick a room that is free for the dates. A different type re-prices: "
+		"check room_move_preview and pass confirm_price=1 once the new price "
+		"is agreed.",
+		{"reservation": {"type": "string"}, "new_room": {"type": "string"},
+		 "confirm_price": {"type": "integer"}},
 		False, True),
+	"room_move_preview": (
+		"room_move_preview",
+		"What moving a stay to a room would do to its bill. Read-only.",
+		{"reservation": {"type": "string"}, "new_room": {"type": "string"}},
+		False, False),
+	"set_late_arrival": (
+		"set_late_arrival",
+		"Flag a confirmed arrival as arriving late (late_arrival=1, optional "
+		"eta) so the night audit holds it instead of marking a no-show; 0 clears.",
+		{"reservation": {"type": "string"}, "late_arrival": {"type": "integer"},
+		 "eta": {"type": "string"}}, False, True),
+	"movable_rooms": (
+		"movable_rooms",
+		"Rooms this stay could move into - across ALL room types - each flagged "
+		"free or occupied for its dates, with the type name. Use this before "
+		"move_room to choose a valid, available room (including upgrades).",
+		{"reservation": {"type": "string"}, "check_in_date": {"type": "string"},
+		 "check_out_date": {"type": "string"}}, False, False),
 	"stay_folios": (
 		"reservation_folios",
 		"All folios of a stay (guest/extra/company/group) with balances.",
@@ -116,10 +172,51 @@ EXTRA_TOOLS = {
 		 "priority": {"type": "string"}, "room": {"type": "string"},
 		 "reservation": {"type": "string"}, "description": {"type": "string"}},
 		True, True),
+	"advance_ticket": (
+		"advance_ticket",
+		"Move a service ticket: In Progress, Resolved, Closed, or Cancelled. "
+		"Pass resolution_note when resolving.",
+		{"ticket": {"type": "string"}, "status": {"type": "string"},
+		 "resolution_note": {"type": "string"}}, False, True),
+	"hk_queue": (
+		"hk_queue",
+		"Housekeeping task queue and room board for this property.",
+		{}, True, False),
+	"hk_update_task": (
+		"hk_update_task",
+		"Start or complete a housekeeping task (In Progress, Done, Verified).",
+		{"task": {"type": "string"}, "status": {"type": "string"}}, False, True),
+	"set_room_hk_status": (
+		"set_housekeeping_status",
+		"Set a room's housekeeping status: Clean, Dirty, Inspected, Ready, Out of Order.",
+		{"room": {"type": "string"}, "status": {"type": "string"}}, False, True),
+	"security_deposit_status": (
+		"security_deposit",
+		"A stay's refundable security deposit: the policy amount, what is "
+		"held, waived, withheld or refunded.",
+		{"reservation": {"type": "string"}}, False, False),
+	"collect_security_deposit": (
+		"collect_security_deposit",
+		"Record a refundable security deposit the guest has paid. mode: one "
+		"of the property's payment modes. Confirm the amount with staff first.",
+		{"reservation": {"type": "string"}, "amount": {"type": "number"},
+		 "mode": {"type": "string"}, "reference": {"type": "string"}},
+		False, True),
+	"waive_security_deposit": (
+		"waive_security_deposit",
+		"Waive the security deposit for one stay (after it is booked). A "
+		"reason is required: use the staff member's words. Refused once "
+		"money was taken.",
+		{"reservation": {"type": "string"}, "reason": {"type": "string"}},
+		False, True),
+	"close_folio": (
+		"close_folio",
+		"Close / settle an open folio and issue the invoice. Balance must be zero. Confirm first.",
+		{"folio": {"type": "string"}}, False, True),
 	"set_room_rate": (
 		"set_room_rate",
 		"Set a nightly rate for a room type over dates. Owner guardrails apply - give a reason.",
-		{"room_type": {"type": "string"}, "start_date": {"type": "string"},
+		{"room_type": ROOM_TYPE_PARAM, "start_date": {"type": "string"},
 		 "end_date": {"type": "string"}, "rate": {"type": "number"},
 		 "reason": {"type": "string"}}, True, True),
 	"owner_briefing": (
@@ -133,10 +230,116 @@ EXTRA_TOOLS = {
 		"and balances due, back-to-back room conflicts, the demand tier "
 		"pricing is applying, and a 7-day outlook.",
 		{"date": {"type": "string"}}, True, False),
+	"night_audit_precheck": (
+		"night_audit.night_audit_precheck",
+		"The night audit checklist for the current business date (read-only): "
+		"open tills, open restaurant bills, departures still in house, arrivals "
+		"and what the no-show policy will do, rate variances, outlet bills on "
+		"rooms, high balances, companies over credit limit, room status "
+		"discrepancies. Each check has a severity (block | warn | info), a "
+		"count, the rows and a suggested action. Run it before run_night_audit.",
+		{}, True, False),
 	"run_night_audit": (
 		"run_night_audit",
-		"Run end-of-day for a date: posts room nights, flags & charges no-shows.",
-		{"business_date": {"type": "string"}}, True, True),
+		"Run end-of-day for the current business date: posts room nights, "
+		"flags & charges no-shows, rolls the business date. Refused while a "
+		"blocking pre-check has items: resolve them, or - only when staff "
+		"confirm - pass acknowledge (the check keys) with note (the reason). "
+		"business_date is optional and must equal the current business date.",
+		{"business_date": {"type": "string"},
+		 "acknowledge": {"type": "array", "items": {"type": "string"}},
+		 "note": {"type": "string"}}, True, True),
+	# Fixed reports. Each keeps its endpoint's role gate (_tool_allowed), so
+	# the agent offers a user exactly the reports their roles can open.
+	"manager_flash": (
+		"reports.manager_flash",
+		"The daily flash: yesterday's occupancy, ADR, RevPAR and revenue, month "
+		"to date, today's movement, collections by mode and the 7-day outlook. "
+		"Pass from_date for a range ending on date.",
+		{"date": {"type": "string"}, "from_date": {"type": "string"}}, True, False),
+	"cashier_shift_report": (
+		"cashier.shift_report",
+		"What each cashier took on a business date (or business_date to "
+		"to_date), by payment mode.",
+		{"business_date": {"type": "string"}, "to_date": {"type": "string"}},
+		True, False),
+	"voids_allowances_report": (
+		"reports.void_allowance_report",
+		"Every void and allowance in a date range, with who did it and why.",
+		{"from_date": {"type": "string"}, "to_date": {"type": "string"}},
+		True, False),
+	"sla_report": (
+		"reports.sla_report",
+		"Guest request (ticket) SLA over a date range: resolution and breach "
+		"rates by category and priority, and the overdue queue.",
+		{"from_date": {"type": "string"}, "to_date": {"type": "string"}},
+		True, False),
+	"outlets": (
+		"pos.outlets",
+		"The property's restaurants, bars and other outlets. Call before "
+		"outlet_dashboard or wastage_report to get an outlet id.",
+		{}, True, False),
+	"outlet_dashboard": (
+		"pos.outlet_dashboard",
+		"One outlet's day: sales, bills, covers, average bill, by order type "
+		"and tender, open bills, NC / voids / cancellations, kitchen times. "
+		"Pass to_date for a range starting on date.",
+		{"outlet": {"type": "string"}, "date": {"type": "string"},
+		 "to_date": {"type": "string"}},
+		False, False),
+	"wastage_report": (
+		"inventory.wastage_report",
+		"Food cooked and then voided over the last N days (default 30), with "
+		"its cost; optionally for one outlet.",
+		{"outlet": {"type": "string"}, "days": {"type": "integer"}},
+		True, False),
+	"list_report_datasets": (
+		"custom_reports.list_report_datasets",
+		"Whitelisted custom-report datasets and columns. Call before building "
+		"or running a custom report.",
+		{}, True, False),
+	"list_report_packs": (
+		"custom_reports.list_report_packs",
+		"Department report packs (Front Office, Housekeeping, F&B, Hotel "
+		"Manager) with the sections this user may see.",
+		{}, True, False),
+	"run_report_pack": (
+		"custom_reports.run_report_pack",
+		"Run a department pack (id from list_report_packs) for a date range; "
+		"defaults to the last 7 days. format=json.",
+		{"pack": {"type": "string"}, "from_date": {"type": "string"},
+		 "to_date": {"type": "string"}, "format": {"type": "string"}},
+		True, False),
+	"list_custom_reports": (
+		"custom_reports.list_custom_reports",
+		"Saved custom reports for this property.",
+		{}, True, False),
+	"save_custom_report": (
+		"custom_reports.save_custom_report",
+		"Create or update a saved custom report (dataset + columns/filters). "
+		"Only catalog field ids - never invent SQL. Pass name to update.",
+		{"title": {"type": "string"}, "dataset": {"type": "string"},
+		 "columns": {"type": "string"}, "filters": {"type": "string"},
+		 "is_shared": {"type": "integer"},
+		 "schedule_frequency": {"type": "string"},
+		 "schedule_time": {"type": "string"},
+		 "recipients": {"type": "string"}, "name": {"type": "string"}},
+		True, True),
+	"run_custom_report": (
+		"custom_reports.run_custom_report",
+		"Run a saved (name) or ad-hoc (dataset) custom report. Prefer "
+		"format=json. from_date / to_date YYYY-MM-DD.",
+		{"name": {"type": "string"}, "dataset": {"type": "string"},
+		 "from_date": {"type": "string"}, "to_date": {"type": "string"},
+		 "columns": {"type": "string"}, "filters": {"type": "string"},
+		 "format": {"type": "string"}, "lang": {"type": "string"}},
+		True, False),
+	"email_custom_report": (
+		"custom_reports.email_custom_report",
+		"Email a custom report CSV to recipients (comma-separated).",
+		{"recipients": {"type": "string"}, "name": {"type": "string"},
+		 "dataset": {"type": "string"}, "from_date": {"type": "string"},
+		 "to_date": {"type": "string"}}, True, True),
 }
 
 TOOLS = {
@@ -151,10 +354,14 @@ TOOLS = {
 		{"start_date": {"type": "string"}, "days": {"type": "integer"}}, True, False),
 	"quote": (
 		"get_quote",
-		"Price a stay (room type, dates, occupancy, optional meal plan / voucher).",
-		{"room_type": {"type": "string"}, "check_in_date": {"type": "string"},
+		"Price a stay (room type, dates, occupancy, optional meal plan / rate "
+		"plan / voucher). Room type, meal plan and rate plan take the id, code "
+		"or exact name; an unknown or ambiguous one is refused with the valid "
+		"options - pick from those, never guess.",
+		{"room_type": ROOM_TYPE_PARAM, "check_in_date": {"type": "string"},
 		 "check_out_date": {"type": "string"}, "adults": {"type": "integer"},
-		 "children": {"type": "integer"}, "meal_plan": {"type": "string"},
+		 "children": {"type": "integer"}, "meal_plan": MEAL_PLAN_PARAM,
+		 "rate_plan": RATE_PLAN_PARAM,
 		 "voucher_code": {"type": "string"}}, True, False),
 	"booking_options": (
 		"booking_options",
@@ -162,11 +369,16 @@ TOOLS = {
 		{}, True, False),
 	"create_booking": (
 		"create_booking",
-		"Book a stay. Quote first; confirm the total with staff before calling.",
-		{"room_type": {"type": "string"}, "check_in_date": {"type": "string"},
+		"Book a stay. Quote first; confirm the total with staff before calling. "
+		"Room type / meal plan / rate plan take the id, code or exact name. "
+		"Call it once per room: a repeat returns the existing booking "
+		"(idempotent_replay) instead of booking twice. For several identical "
+		"rooms, call it once per room in the same reply.",
+		{"room_type": ROOM_TYPE_PARAM, "check_in_date": {"type": "string"},
 		 "check_out_date": {"type": "string"}, "guest_name": {"type": "string"},
 		 "phone": {"type": "string"}, "adults": {"type": "integer"},
-		 "children": {"type": "integer"}, "meal_plan": {"type": "string"},
+		 "children": {"type": "integer"}, "meal_plan": MEAL_PLAN_PARAM,
+		 "rate_plan": RATE_PLAN_PARAM,
 		 "company": {"type": "string"},
 		 "booked_by_name": {"type": "string"},
 		 "booked_by_phone": {"type": "string"}}, True, True),
@@ -181,7 +393,8 @@ TOOLS = {
 	"stay_detail": (
 		"reservation_detail",
 		"Full detail for one reservation: dates, room, guest + stay history, "
-		"folio balance (paid/due), booker, and which actions are available.",
+		"folio balance so far (paid/due), booker, and which actions are "
+		"available. Not the check-out amount: use checkout_context for that.",
 		{"reservation": {"type": "string"}}, False, False),
 	"waitlist_ready": (
 		"waitlist_ready",
@@ -218,9 +431,14 @@ TOOLS = {
 		"Name a guest into a group's room block (creates their reservation "
 		"on the group dates).",
 		{"group_booking": {"type": "string"},
-		 "room_type": {"type": "string"},
+		 "room_type": ROOM_TYPE_PARAM,
 		 "guest_name": {"type": "string"},
-		 "phone": {"type": "string"}}, False, True),
+		 "phone": {"type": "string"}, "adults": {"type": "integer"},
+		 "children": {"type": "integer"},
+		 "idempotency_key": {
+			 "type": "string",
+			 "description": "Optional unique key for this pickup; a retry with "
+			 "the same key returns the first reservation."}}, False, True),
 	"guest_search": (
 		"guest_search",
 		"Find a guest profile by name or phone (returning guests, VIPs).",
@@ -229,9 +447,17 @@ TOOLS = {
 		"check_in",
 		"Check a reservation in (optionally into a specific room).",
 		{"reservation": {"type": "string"}, "room": {"type": "string"}}, False, True),
+	"checkout_context": (
+		"checkout_context",
+		"Read-only: what check-out will ask for. Balances per folio after the "
+		"nights check-out still posts, the total the guest owes, a held "
+		"security deposit, open restaurant bills and every blocker. Call it "
+		"before collecting a balance or checking out.",
+		{"reservation": {"type": "string"}}, False, False),
 	"check_out": (
 		"check_out",
-		"Check a reservation out. State the folio balance first if unpaid.",
+		"Check a reservation out. Call checkout_context first and settle what "
+		"it says is owed.",
 		{"reservation": {"type": "string"}}, False, True),
 	"get_folio": (
 		"get_folio",
@@ -246,8 +472,13 @@ TOOLS = {
 		False, True),
 	"record_payment": (
 		"add_folio_payment",
-		"Record a payment against a folio (mode: Cash, UPI, Card, Bank, Link).",
-		{"folio": {"type": "string"}, "mode": {"type": "string"},
+		"Record a payment staff say was received, against a folio (mode: "
+		"Cash, UPI, Card, Bank, Link). folio is "
+		"the folio id from checkout_context folios[].folio or get_folio. If you "
+		"only have the booking, pass reservation instead and leave folio out: "
+		"the stay's open guest folio is used.",
+		{"folio": {"type": "string"}, "reservation": {"type": "string"},
+		 "mode": {"type": "string"},
 		 "amount": {"type": "number"}, "reference": {"type": "string"}}, False, True),
 	"cancellation_preview": (
 		"cancellation_preview",
@@ -255,7 +486,9 @@ TOOLS = {
 		{"reservation": {"type": "string"}}, False, False),
 	"cancel_booking": (
 		"cancel_reservation",
-		"Cancel a confirmed booking (policy applies; returns a cancellation number to read out).",
+		"Cancel a confirmed booking (policy applies; returns a cancellation number to read out). "
+		"Only after cancellation_preview AND staff answered yes to the fee in a later "
+		"message. Never in the same turn as the preview.",
 		{"reservation": {"type": "string"}, "reason": {"type": "string"},
 		 "note": {"type": "string"}}, False, True),
 
@@ -381,14 +614,148 @@ def _settings(property: str):
 
 @frappe.whitelist()
 def assistant_status(property: str):
+	from kamra.authz import assert_property_access
+	assert_property_access(property)
 	s = _settings(property)
 	key = s.get_password("api_key", raise_exception=False) if s else None
 	# Never return the key - only a masked tail so admins can confirm one is set.
 	key_hint = ("••••" + key[-4:]) if key and len(key) >= 4 else None
+	base = (s.base_url if s else None) or "https://api.openai.com/v1"
 	return {
 		"enabled": bool(s and s.enabled and key),
 		"model": (s.model if s else None) or "gpt-4o-mini",
+		"base_url": base,
 		"key_hint": key_hint,
+		"processor_disclosure": processor_disclosure(base),
+		"redact_guest_contact_details": bool(
+			cint(s.redact_guest_contact_details) if s else 1),
+	}
+
+
+# Presets for Settings → AI assistant. All speak OpenAI Chat Completions.
+# Claude Desktop is a different path (MCP) — not an Anthropic key here.
+AI_PROVIDER_PRESETS = (
+	{
+		"id": "openai",
+		"label": "OpenAI",
+		"base_url": "https://api.openai.com/v1",
+		"model": "gpt-4o-mini",
+		"hint": "Paste an sk-… key from platform.openai.com",
+	},
+	{
+		"id": "gemini",
+		"label": "Google Gemini",
+		"base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+		"model": "gemini-2.0-flash",
+		"hint": "Paste a Google AI Studio key — uses Gemini's OpenAI-compatible URL",
+	},
+	{
+		"id": "groq",
+		"label": "Groq",
+		"base_url": "https://api.groq.com/openai/v1",
+		"model": "llama-3.3-70b-versatile",
+		"hint": "Fast open models — key from console.groq.com",
+	},
+	{
+		"id": "openrouter",
+		"label": "OpenRouter",
+		"base_url": "https://openrouter.ai/api/v1",
+		"model": "openai/gpt-4o-mini",
+		"hint": "One key for many models (including Claude-as-model). Not Claude Desktop MCP.",
+	},
+	{
+		"id": "ollama",
+		"label": "Ollama (local)",
+		"base_url": "http://host.docker.internal:11434/v1",
+		"model": "llama3.2",
+		"hint": "Local models. From Docker use host.docker.internal; on bare metal use http://127.0.0.1:11434/v1",
+	},
+	{
+		"id": "azure",
+		"label": "Azure OpenAI",
+		"base_url": "",
+		"model": "gpt-4o-mini",
+		"hint": "Paste your Azure resource Chat Completions URL ending in /v1 (or /openai/v1)",
+	},
+	{
+		"id": "custom",
+		"label": "Custom (OpenAI-compatible)",
+		"base_url": "",
+		"model": "gpt-4o-mini",
+		"hint": "Any host that implements POST /v1/chat/completions",
+	},
+)
+
+
+@frappe.whitelist()
+@require_roles("Hotel Admin", "System Manager", "Front Desk")
+def provider_presets():
+	"""Dropdown options for Settings — kill 'paste Claude key into OpenAI' tickets."""
+	out = []
+	for row in AI_PROVIDER_PRESETS:
+		p = dict(row)
+		p["processor_note"] = processor_disclosure(p.get("base_url"))
+		out.append(p)
+	return {"presets": out}
+
+
+@frappe.whitelist(methods=["POST"])
+@require_roles("Hotel Admin", "System Manager")
+def test_connection(property: str, base_url: str | None = None,
+                    model: str | None = None, api_key: str | None = None):
+	"""One cheap Chat Completions call with no tools. Returns the provider
+	error text when it fails so Setup is diagnosable."""
+	import time
+
+	s = _settings(property)
+	key = (api_key or "").strip() or (
+		s.get_password("api_key", raise_exception=False) if s else None)
+	if not key:
+		frappe.throw("No API key — paste one, or save Settings first.")
+	if key.lower().startswith("sk-ant-"):
+		frappe.throw(
+			"That looks like an Anthropic / Claude API key. This chat uses "
+			"OpenAI-compatible Chat Completions only. Use Connect Claude "
+			"(MCP) on Kamra Agent, or put Claude behind OpenRouter.")
+
+	base = (base_url or (s.base_url if s else None)
+	        or "https://api.openai.com/v1").rstrip("/")
+	mdl = model or (s.model if s else None) or "gpt-4o-mini"
+	headers = {"Authorization": f"Bearer {key}",
+	           "Content-Type": "application/json"}
+	body = chat_payload(
+		mdl,
+		[{"role": "user", "content": "Reply with exactly: ok"}],
+		temperature=0,
+	)
+	# No tools — simplest possible probe.
+	t0 = time.monotonic()
+	try:
+		resp = requests.post(f"{base}/chat/completions", headers=headers,
+		                     json=body, timeout=30)
+	except requests.RequestException as e:
+		return {"ok": False, "error": f"Could not reach {base}: {e}",
+		        "base_url": base, "model": mdl}
+	ms = int((time.monotonic() - t0) * 1000)
+	if resp.status_code != 200:
+		return {
+			"ok": False,
+			"status": resp.status_code,
+			"error": (resp.text or "")[:400],
+			"base_url": base,
+			"model": mdl,
+			"latency_ms": ms,
+		}
+	try:
+		text = (resp.json()["choices"][0]["message"].get("content") or "")
+	except (KeyError, IndexError, ValueError, TypeError):
+		text = (resp.text or "")[:200]
+	return {
+		"ok": True,
+		"reply": text[:200],
+		"base_url": base,
+		"model": mdl,
+		"latency_ms": ms,
 	}
 
 
@@ -452,6 +819,120 @@ def _post_chat(base: str, headers: dict, body: dict, *, stream: bool = False):
 	                     timeout=TIMEOUT, stream=stream)
 
 
+# a ticket the copilot raises is an agent's ticket - the same source the MCP
+# create_ticket tool stamps, so reports tell it apart from staff-typed ones
+_FIXED_ARGS = {"raise_ticket": {"source": "AI Agent"}}
+
+
+def _payment_folio(args: dict) -> dict:
+	"""record_payment takes a folio id, but models often have only the
+	booking (or pass it as the folio): use that stay's open guest folio."""
+	args = dict(args)
+	res = args.pop("reservation", None)
+	folio = args.get("folio")
+	if folio and frappe.db.exists("Folio", folio):
+		return args
+	if not res and folio and frappe.db.exists("Reservation", folio):
+		res = folio
+	if res:
+		found = frappe.db.get_value(
+			"Folio", {"reservation": res, "folio_type": "Guest", "status": "Open"},
+			"name", order_by="creation desc")
+		if found:
+			args["folio"] = found
+	return args
+
+
+# the documents a chat tool may name, and the field that ties each to a property
+_SCOPED_ARGS = {"reservation": "Reservation", "folio": "Folio",
+                "outlet": "POS Outlet"}
+
+
+def _assert_this_property(args: dict, property: str) -> None:
+	"""Kamra Agent works for the property it was opened on. A reservation or
+	folio from another property (a guessed or remembered id) is refused even
+	when the user may see that property elsewhere."""
+	for key, doctype in _SCOPED_ARGS.items():
+		value = args.get(key)
+		if not value or not frappe.db.exists(doctype, value):
+			continue
+		owner = frappe.db.get_value(doctype, value, "property")
+		if owner and owner != property:
+			frappe.throw(f"{value} belongs to another property, not this one. "
+			             "Look the stay up again with find_reservations.")
+
+
+def _recent_same_stays(args: dict, property: str) -> int:
+	"""Live stays for this guest name and dates made in the duplicate window."""
+	from frappe.utils import add_to_date, now_datetime
+
+	from kamra.reservation_state import AGENT_DUPLICATE_WINDOW_MINUTES, LIVE_STATUSES
+	if not (args.get("guest_name") and args.get("check_in_date")
+	        and args.get("check_out_date")):
+		return 0
+	return frappe.db.count("Reservation", {
+		"property": property, "guest_name": args["guest_name"].strip(),
+		"check_in_date": args["check_in_date"],
+		"check_out_date": args["check_out_date"],
+		"status": ("in", list(LIVE_STATUSES)),
+		"creation": (">=", add_to_date(
+			now_datetime(), minutes=-AGENT_DUPLICATE_WINDOW_MINUTES)),
+	})
+
+
+def _note_refs(args: dict, result) -> None:
+	"""Remember the stays this turn touched; see _missing_refs."""
+	refs = getattr(frappe.local, "kamra_chat_refs", None)
+	if refs is None:
+		return
+	found = [args.get("reservation")]
+	if isinstance(result, dict):
+		found += [result.get("reservation"), result.get("name")]
+	for ref in found:
+		if isinstance(ref, str) and ref.startswith("RES-") and ref not in refs:
+			refs.append(ref)
+
+
+def _note_quote(args: dict, result) -> None:
+	"""Keep the turn's last quote, so the chat can show it as a card."""
+	if not isinstance(result, dict) or "amount_after_tax" not in result:
+		return
+	frappe.local.kamra_chat_quote = {
+		"type": "quote",
+		"room_type": args.get("room_type"),
+		"check_in_date": args.get("check_in_date"),
+		"check_out_date": args.get("check_out_date"),
+		"adults": args.get("adults"),
+		"children": args.get("children"),
+		"nights": result.get("nights"),
+		"total": result.get("amount_after_tax"),
+		"deposit": (result.get("totals") or {}).get("deposit_required") or 0,
+		"currency": result.get("currency"),
+	}
+
+
+def _turn_cards() -> list[dict]:
+	"""What the chat draws under a reply: the stays the turn touched (the
+	screen loads each through reservation_detail, with the user's own
+	permissions) and the last quote, unless the turn went on to book it."""
+	refs = list(getattr(frappe.local, "kamra_chat_refs", None) or [])
+	cards: list[dict] = []
+	quote = getattr(frappe.local, "kamra_chat_quote", None)
+	if quote and not refs:
+		cards.append(quote)
+	cards += [{"type": "stay", "reservation": r} for r in refs[:3]]
+	return cards
+
+
+def _missing_refs(text: str) -> str:
+	"""Later turns only see the replies, not tool results: a reply about a
+	stay that never names its reservation id leaves the next turn guessing
+	one. Returns a "Ref:" line for the ids the reply left out."""
+	refs = getattr(frappe.local, "kamra_chat_refs", None) or []
+	missing = [r for r in refs if r not in (text or "")][:3]
+	return f"\n\nRef: {', '.join(missing)}" if missing else ""
+
+
 def _run_tool(name: str, args: dict, property: str):
 	if not _tool_allowed(name):
 		frappe.throw("Your role doesn't include this action.",
@@ -462,21 +943,53 @@ def _run_tool(name: str, args: dict, property: str):
 	         if k in params and v not in (None, "")}
 	if inject:
 		clean["property"] = property
+	_assert_this_property(clean, property)
+	if name == "record_payment":
+		clean = _payment_folio(clean)
+	if name == "create_booking":
+		# A model-made key reads as "a second identical room on purpose" and
+		# switches the duplicate guard off, so the chat never passes one. The
+		# same booking twice in ONE turn is deliberate ("book two rooms"); in a
+		# later turn it is a retry, and the duplicate guard returns the first.
+		# Asked for N identical rooms, it books only while fewer than N
+		# matching stays were made recently (earlier turns count too).
+		import uuid
+		sig = frappe.as_json(sorted(clean.items()))
+		seen = getattr(frappe.local, "kamra_chat_bookings", None)
+		if seen is not None:
+			seen[sig] = seen.get(sig, 0) + 1
+			if seen[sig] > 1 and _recent_same_stays(clean, property) < seen[sig]:
+				clean["idempotency_key"] = f"chat-{uuid.uuid4().hex}"
+	# arguments the tool always carries, whatever the model sent
+	clean.update(_FIXED_ARGS.get(name, {}))
 	# Kamra Agent tool calls are agent actions: accountability comes from
 	# action log, not the cashier PIN (which guards humans at a terminal)
-	frappe.flags.kamra_agent_call = True
+	# the channel doubles as the "agent call" flag the cashier PIN and the
+	# booking duplicate guard read; create_booking stamps source AI Agent
+	prev, frappe.flags.kamra_agent_call = frappe.flags.kamra_agent_call, "Chat"
 	try:
 		result = fn(**clean)
 	finally:
-		frappe.flags.kamra_agent_call = False
-	if mutating:
+		frappe.flags.kamra_agent_call = prev
+	if mutating and not is_replay(result):
 		# a guaranteed audit line for every state-changing chat action,
 		# on top of whatever the API itself logs
 		from kamra.savings import log_action
 		log_action("copilot_" + name, "Property", property, property,
 		           rationale=frappe.as_json(clean)[:400],
 		           agent_name="Front Desk Copilot", channel="Chat")
+	_note_refs(clean, result)
+	if name == "quote":
+		_note_quote(clean, result)
 	return json.loads(frappe.as_json(result))
+
+
+def _tool_json_for_provider(result, settings):
+	"""Mask guest phone / ID in tool payloads before they leave for the LLM."""
+	if isinstance(result, dict) and set(result.keys()) == {"error"}:
+		return frappe.as_json(result)
+	strict = bool(cint(getattr(settings, "redact_guest_contact_details", 1)))
+	return frappe.as_json(scrub_for_llm(result, strict=strict))
 
 
 @frappe.whitelist()
@@ -507,6 +1020,9 @@ def ask(property: str, messages):
 	headers = {"Authorization": f"Bearer {api_key}",
 	           "Content-Type": "application/json"}
 	actions = []
+	frappe.local.kamra_chat_bookings = {}
+	frappe.local.kamra_chat_refs = []
+	frappe.local.kamra_chat_quote = None
 	for _ in range(MAX_TOOL_ROUNDS):
 		resp = _post_chat(base, headers, chat_payload(
 			model, convo, tools=_tool_defs(), temperature=0.2))
@@ -518,7 +1034,9 @@ def ask(property: str, messages):
 
 		calls = msg.get("tool_calls") or []
 		if not calls:
-			return {"reply": msg.get("content") or "", "actions": actions}
+			reply = msg.get("content") or ""
+			return {"reply": reply + _missing_refs(reply), "actions": actions,
+			        "cards": _turn_cards()}
 
 		for call in calls:
 			name = call["function"]["name"]
@@ -534,7 +1052,7 @@ def ask(property: str, messages):
 				actions.append({"tool": name, "ok": False, "error": str(e)})
 			convo.append({"role": "tool",
 			              "tool_call_id": call["id"],
-			              "content": frappe.as_json(result)})
+			              "content": _tool_json_for_provider(result, s)})
 
 	return {"reply": "I hit my tool-call limit for one question - "
 	                 "try breaking it into smaller steps.",
@@ -550,7 +1068,8 @@ def ask_stream(property: str, messages):
 	`token` events. The generator itself touches no DB - only the OpenAI stream
 	- so it's safe to iterate after the request handler returns.
 
-	Events: action {tool, ok} · token {text} · error {message} · done {}
+	Events: action {tool, ok} · token {text} · card {type, ...} · error
+	{message} · done {}
 	"""
 	from werkzeug.wrappers import Response
 
@@ -575,6 +1094,9 @@ def ask_stream(property: str, messages):
 
 	# --- resolve tools synchronously (DB access happens here, before streaming)
 	actions = []
+	frappe.local.kamra_chat_bookings = {}
+	frappe.local.kamra_chat_refs = []
+	frappe.local.kamra_chat_quote = None
 	for _ in range(MAX_TOOL_ROUNDS):
 		resp = _post_chat(base, headers, chat_payload(
 			model, convo, tools=_tool_defs(), temperature=0.2))
@@ -597,12 +1119,17 @@ def ask_stream(property: str, messages):
 				result = {"error": str(e)}
 				actions.append({"tool": call["function"]["name"], "ok": False})
 			convo.append({"role": "tool", "tool_call_id": call["id"],
-			              "content": frappe.as_json(result)})
+			              "content": _tool_json_for_provider(result, s)})
 
 	def sse(event, data):
 		return f"event: {event}\ndata: {json.dumps(data)}\n\n"
 
+	# read now: the generator runs after the request context is gone
+	refs = list(getattr(frappe.local, "kamra_chat_refs", None) or [])
+	cards = _turn_cards()
+
 	def gen():
+		streamed = []
 		for a in actions:
 			yield sse("action", a)
 		try:
@@ -626,7 +1153,14 @@ def ask_stream(property: str, messages):
 					except (ValueError, KeyError, IndexError):
 						continue
 					if delta.get("content"):
+						streamed.append(delta["content"])
 						yield sse("token", {"text": delta["content"]})
+				text = "".join(streamed)
+				missing = [r for r in refs if r not in text][:3]
+				if missing:
+					yield sse("token", {"text": f"\n\nRef: {', '.join(missing)}"})
+				for card in cards:
+					yield sse("card", card)
 		except Exception as e:
 			yield sse("error", {"message": str(e)[:150]})
 		yield sse("done", {})
@@ -656,7 +1190,11 @@ What Kamra does and where to find it:
 - Guests: profiles with stay history, VIP/blacklist, merge and anonymize.
 - Billing: folios, post charges, take payments, payment links. Closing a folio
   assigns a GST tax invoice (logo, GSTIN, place of supply, SAC 996311).
-- Reports: occupancy, ADR, RevPAR, RevPAX, MTD, collections, 14-day trend.
+- Reports: one Reports hub - manager flash, shift report, F&B dashboard,
+  banquet registers, SLA, voids, department packs (Front Office,
+  Housekeeping, F&B, Hotel Manager) and custom reports (build, save, group
+  and drill down, email daily or weekly). Which reports a user sees follows their
+  role.
 - Housekeeping: room board + a phone app at /kamra/hk.
 - Revenue: rate plans, seasons, vouchers, rate guardrails.
 - Events: Venue Bookings and a Venue Calendar (banquet/function diary);

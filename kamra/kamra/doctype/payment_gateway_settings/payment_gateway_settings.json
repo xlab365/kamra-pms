@@ -33,8 +33,9 @@
    "fieldname": "gateway",
    "fieldtype": "Select",
    "in_list_view": 1,
+   "description": "Offered by the property's country pack (India: Razorpay, Cashfree)",
    "label": "Gateway",
-   "options": "Razorpay"
+   "options": "Razorpay\nCashfree"
   },
   {
    "fieldname": "column_break_a",
@@ -62,6 +63,7 @@
    "label": "API Keys"
   },
   {
+   "description": "Razorpay Key ID, or Cashfree App ID",
    "fieldname": "key_id",
    "fieldtype": "Data",
    "label": "Key ID"
@@ -72,11 +74,13 @@
    "label": "Column Break B"
   },
   {
+   "description": "Razorpay Key secret, or Cashfree Secret key",
    "fieldname": "key_secret",
    "fieldtype": "Password",
    "label": "Key Secret"
   },
   {
+   "depends_on": "eval:doc.gateway != \"Cashfree\"",
    "description": "Set the same secret on the Razorpay webhook for signature checks",
    "fieldname": "webhook_secret",
    "fieldtype": "Password",
@@ -86,7 +90,7 @@
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-07-04 21:10:02.013314",
+ "modified": "2026-10-09 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Kamra",
  "name": "Payment Gateway Settings",

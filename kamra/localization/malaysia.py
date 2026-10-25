@@ -21,9 +21,14 @@ connected service can wire it later without touching this seam.
 
 from decimal import Decimal
 
-
 DEFAULT_SST = Decimal("8")   # accommodation, since 2024-03-01
 FNB_SST = Decimal("6")       # food & beverage kept the old rate
+
+DEFAULT_CURRENCY = "MYR"
+DEFAULT_TIMEZONE = "Asia/Kuala_Lumpur"
+DEFAULT_NATIONALITY = "Malaysian"
+ID_TYPES = ["MyKad", "Passport", "Driving License", "Other"]
+PAYMENT_MODES = ["Cash", "Card", "Bank Transfer"]
 
 
 def calculate_room_tax(property, room_type_doc, nightly_rate) -> Decimal:
@@ -36,6 +41,11 @@ def fnb_tax_rate(property) -> float:
 	"""F&B service tax stayed at 6% when accommodation moved to 8% -
 	deliberately NOT the room rate."""
 	return float(FNB_SST)
+
+
+def services_tax_rate(property) -> float:
+	"""Laundry and other taxable services moved to 8% with accommodation."""
+	return float(DEFAULT_SST)
 
 
 def tax_rate_options(property) -> list:

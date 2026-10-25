@@ -116,7 +116,12 @@ def f3():
 		api.check_in(out["reservation"])
 		folio = api.get_folio(out["reservation"])
 		assert folio["status"] == "Open", folio["status"]
-		api.check_out(out["reservation"])
+		# settlement has its own eval (t86); this journey is about housekeeping
+		frappe.flags.allow_unsettled_checkout = True
+		try:
+			api.check_out(out["reservation"])
+		finally:
+			frappe.flags.allow_unsettled_checkout = False
 	res = frappe.get_doc("Reservation", out["reservation"])
 	assert res.status == "Checked Out", res.status
 	hk = frappe.db.exists("Housekeeping Task", {"room": res.room,
@@ -193,6 +198,10 @@ def f7():
 	post_room_night(frappe.get_doc("Reservation", out["reservation"]),
 	                "2032-02-15")
 	with at_the_desk():
+		# a real cashier must have an open till before money moves
+		# (Finance → Cashier); open one for this shift
+		from kamra.cashier import open_session
+		open_session(P)
 		fd = frappe.get_doc("Folio", folio)
 		api.add_folio_payment(folio, "UPI", fd.grand_total)
 		inv = api.close_folio(folio)
@@ -280,7 +289,6 @@ def f11():
 
 @check("day-use: same-day stay books, occupies, and checks out today")
 def f12():
-	from kamra import api
 	with at_the_desk():
 		out = _book("FD Dayuse", "+91 71000 00017", "2032-06-01", "2032-06-01")
 		res = frappe.get_doc("Reservation", out["reservation"])
@@ -307,6 +315,9 @@ def f13():
 def execute():
 	global RT, ROOM, ROOM2
 	frappe.local.lang = frappe.local.lang or "en"
+	# these journeys check in through api.check_in directly; the guided
+	# check-in's required steps are covered by the eval harness (t340+)
+	frappe.flags.kamra_checkin_steps_off = True
 	real_commit, frappe.db.commit = frappe.db.commit, lambda *a, **k: None
 	frappe.db.savepoint("fd_eval_start")
 	try:

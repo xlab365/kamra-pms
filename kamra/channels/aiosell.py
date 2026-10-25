@@ -224,7 +224,11 @@ def parse_webhook(conn, payload) -> list[dict]:
 			"phone": guest.get("phone") or "",
 			"email": guest.get("email") or "",
 			"total": total,
-			"currency": amount.get("currency") or "INR",
+			# the channel's own price per night - the reservation locks
+			# these (scaled to the total) as its confirmed nightly rates
+			"nightly": [{"date": p.get("date"), "amount": float(p.get("sellRate") or 0)}
+			            for p in prices if p.get("date")],
+			"currency": amount.get("currency") or frappe.db.get_value("Property", conn.property, "currency"),
 			"notes": payload.get("specialRequests") or "",
 		})
 	return out
@@ -279,6 +283,8 @@ def _auth_ok(conn) -> bool:
 		return False
 	exp_user = conn.api_username or ""
 	exp_pwd = conn.get_password("api_key", raise_exception=False) or ""
+	if not exp_user or not exp_pwd:
+		return False  # unconfigured connection: never accept empty creds
 	return (hmac.compare_digest(user, exp_user)
 	        and hmac.compare_digest(pwd, exp_pwd))
 

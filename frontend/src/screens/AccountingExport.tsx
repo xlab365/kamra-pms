@@ -6,9 +6,13 @@ import { serverError } from "../lib/resource"
 import { Button } from "../components/ui/button"
 import { Card, CardContent, CardHeader } from "../components/ui/card"
 import { cur, moneyLocale } from "../lib/money"
+import { t as translate, useUILanguage } from "../lib/i18n"
+
+type Row = Record<string, unknown>
+type Line = Record<string, unknown>
 
 interface ExportData {
-  rows: Record<string, string | number>[]
+  rows: Row[]
   components: string[]
   tax_label: string
   tax_id_label: string
@@ -17,10 +21,39 @@ interface ExportData {
 }
 
 /** A column in a tool's import file: label shown, and how to pull the value. */
-type Col = { header: string; pick: (r: Record<string, string | number>, d: ExportData) => string }
+type Col = { header: string; pick: (r: Row, d: ExportData) => string }
 
 const money = (v: unknown) => String(Number(v ?? 0).toFixed(2))
 const compHeader = (c: string) => c.toUpperCase()
+
+/** Item-level formats (generic, Zoho) get one row per invoice line group -
+ *  each service code (SAC/HSN) and tax rate on the invoice - so a bill with
+ *  a room, a dinner and a laundry bag exports three codes, not the room's
+ *  code three times. Voucher-level formats (Tally, ERPNext) keep one row per
+ *  invoice. */
+const ITEM_LEVEL = new Set(["generic", "zoho"])
+
+function rowsFor(format: string, d: ExportData): Row[] {
+  if (!ITEM_LEVEL.has(format)) return d.rows
+  return d.rows.flatMap((r) => {
+    const lines = (r.lines as Line[] | undefined) ?? []
+    return lines.length
+      ? lines.map((l) => {
+          const out: Row = {
+            ...r,
+            item: String(l.description ?? ""),
+            service_code: String(l.service_code ?? ""),
+            rate: Number(l.rate ?? 0),
+            taxable: Number(l.taxable ?? 0),
+            total_tax: Number(l.total_tax ?? 0),
+            line_total: Number(l.total ?? 0),
+          }
+          for (const c of d.components) out[c] = Number(l[c] ?? 0)
+          return out
+        })
+      : [{ ...r, item: "", rate: "", line_total: r.grand_total }]
+  })
+}
 
 /** Per-tool column layouts over the same rows. Tax columns come from the
  *  localization pack (CGST/SGST for India, TAX elsewhere). */
@@ -36,7 +69,9 @@ function columnsFor(format: string, d: ExportData): Col[] {
       { header: "Customer Name", pick: (r) => String(r.party) },
       { header: "GST Identification Number (GSTIN)", pick: (r) => String(r.party_tax_id) },
       { header: "Place of Supply", pick: (r) => String(r.place_of_supply) },
+      { header: "Item Name", pick: (r) => String(r.item ?? "") },
       { header: "HSN/SAC", pick: (r) => String(r.service_code) },
+      { header: "Item Tax %", pick: (r) => String(r.rate ?? "") },
       { header: "Item Total", pick: (r) => money(r.taxable) },
       ...taxCols,
       { header: "Total", pick: (r) => money(r.grand_total) },
@@ -70,11 +105,14 @@ function columnsFor(format: string, d: ExportData): Col[] {
     { header: "Party", pick: (r) => String(r.party) },
     { header: d.tax_id_label, pick: (r) => String(r.party_tax_id) },
     { header: "Place of Supply", pick: (r) => String(r.place_of_supply) },
+    { header: "Item", pick: (r) => String(r.item ?? "") },
     { header: "SAC/HSN", pick: (r) => String(r.service_code) },
+    { header: `${d.tax_label} %`, pick: (r) => String(r.rate ?? "") },
     { header: "Taxable", pick: (r) => money(r.taxable) },
     ...taxCols,
     { header: `${d.tax_label} Total`, pick: (r) => money(r.total_tax) },
-    { header: "Grand Total", pick: (r) => money(r.grand_total) },
+    { header: "Line Total", pick: (r) => money(r.line_total) },
+    { header: "Invoice Total", pick: (r) => money(r.grand_total) },
   ]
 }
 
@@ -86,6 +124,7 @@ const FORMATS = [
 ]
 
 export default function AccountingExport() {
+  useUILanguage()
   const property = getCurrentProperty()
   const today = new Date().toISOString().slice(0, 10)
   const monthAgo = new Date(Date.now() - 30 * 864e5).toISOString().slice(0, 10)
@@ -114,7 +153,7 @@ export default function AccountingExport() {
     const cols = columnsFor(format, data)
     const csv = [
       cols.map((c) => esc(c.header)).join(","),
-      ...data.rows.map((r) => cols.map((c) => esc(c.pick(r, data))).join(",")),
+      ...rowsFor(format, data).map((r) => cols.map((c) => esc(c.pick(r, data))).join(",")),
     ].join("\n")
     const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8" })
     const a = document.createElement("a")
@@ -125,17 +164,14 @@ export default function AccountingExport() {
   }
 
   const cols = data ? columnsFor(format, data) : []
+  const shown = data ? rowsFor(format, data) : []
 
   return (
     <div className="space-y-5">
       <header className="flex items-center gap-2">
         <FileSpreadsheet className="size-5 text-brand-600" aria-hidden />
-        <h1 className="text-xl font-semibold tracking-tight">
-          Accounting Export
-        </h1>
-        <p className="ml-2 text-sm text-zinc-500">
-          Closed invoices, ready to import into your books.
-        </p>
+        <h1 className="text-xl font-semibold tracking-tight">{translate("Accounting Export")}</h1>
+        <p className="ml-2 text-sm text-zinc-500">{translate("Closed invoices, ready to import into your books.")}</p>
       </header>
 
       <Card>
@@ -146,53 +182,48 @@ export default function AccountingExport() {
               className="rounded-lg border border-zinc-300 px-2 py-1.5 text-sm"
               value={from}
               onChange={(e) => setFrom(e.target.value)}
-              aria-label="From"
+              aria-label={translate("From")}
             />
-            <span className="text-xs text-zinc-400">to</span>
+            <span className="text-xs text-zinc-400">{translate("to")}</span>
             <input
               type="date"
               className="rounded-lg border border-zinc-300 px-2 py-1.5 text-sm"
               value={to}
               onChange={(e) => setTo(e.target.value)}
-              aria-label="To"
+              aria-label={translate("To")}
             />
             <select
               className="rounded-lg border border-zinc-300 px-2.5 py-1.5 text-sm"
               value={format}
               onChange={(e) => setFormat(e.target.value)}
-              aria-label="Format"
+              aria-label={translate("Format")}
             >
               {FORMATS.map((f) => (
                 <option key={f.key} value={f.key}>
-                  {f.label}
+                  {translate(f.label)}
                 </option>
               ))}
             </select>
           </div>
           <Button disabled={!data || data.rows.length === 0} onClick={download}>
-            <Download className="size-4" aria-hidden />
-            Download CSV
-          </Button>
+            <Download className="size-4" aria-hidden />{translate("Download CSV")}</Button>
         </CardHeader>
         <CardContent>
           {error && (
             <div className="mb-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
-              {error}
+              {translate(error)}
             </div>
           )}
           {data && (
             <>
               <p className="mb-3 text-sm text-zinc-500">
-                {data.totals.invoices} invoice
-                {data.totals.invoices === 1 ? "" : "s"} · taxable {cur()}
+                {data.totals.invoices}{translate(" invoice")}{data.totals.invoices === 1 ? "" : translate("s")}{translate(" · taxable ")}{cur()}
                 {data.totals.taxable.toLocaleString(moneyLocale())} · {data.tax_label} {cur()}
-                {data.totals.total_tax.toLocaleString(moneyLocale())} · total {cur()}
+                {data.totals.total_tax.toLocaleString(moneyLocale())}{translate(" · total ")}{cur()}
                 {data.totals.grand_total.toLocaleString(moneyLocale())}
               </p>
               {data.rows.length === 0 ? (
-                <p className="py-6 text-center text-sm text-zinc-400">
-                  No closed invoices in this window.
-                </p>
+                <p className="py-6 text-center text-sm text-zinc-400">{translate("No closed invoices in this window.")}</p>
               ) : (
                 <div className="overflow-x-auto rounded-xl border border-zinc-200">
                   <table className="w-full text-sm">
@@ -200,13 +231,13 @@ export default function AccountingExport() {
                       <tr className="border-b border-zinc-200 bg-zinc-50 text-left text-xs font-medium uppercase tracking-wider text-zinc-500">
                         {cols.map((c) => (
                           <th key={c.header} className="whitespace-nowrap px-3 py-2">
-                            {c.header}
+                            {translate(c.header)}
                           </th>
                         ))}
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-zinc-100">
-                      {data.rows.slice(0, 12).map((r, i) => (
+                      {shown.slice(0, 12).map((r, i) => (
                         <tr key={i}>
                           {cols.map((c) => (
                             <td
@@ -220,10 +251,8 @@ export default function AccountingExport() {
                       ))}
                     </tbody>
                   </table>
-                  {data.rows.length > 12 && (
-                    <p className="px-3 py-2 text-xs text-zinc-400">
-                      Showing 12 of {data.rows.length} - download for all.
-                    </p>
+                  {shown.length > 12 && (
+                    <p className="px-3 py-2 text-xs text-zinc-400">{translate("Showing 12 of ")}{shown.length}{translate(" rows - download for all.")}</p>
                   )}
                 </div>
               )}

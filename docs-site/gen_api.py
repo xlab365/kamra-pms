@@ -13,6 +13,20 @@ Keep this in sync by re-running it whenever endpoints change; CI-friendly
 (deterministic output).
 """
 
+from __future__ import annotations
+
+
+def _ascii_dashes(text: str) -> str:
+	"""Docs CI rejects Unicode em/en dashes in published markdown."""
+	return (
+		text.replace("\u2014", " - ")
+		.replace("\u2013", "-")
+		.replace(" — ", " - ")
+		.replace("—", " - ")
+		.replace(" – ", " - ")
+		.replace("–", "-")
+	)
+
 import ast
 import json
 import os
@@ -24,18 +38,44 @@ APP = os.path.join(HERE, "..", "kamra")
 # module -> (Postman folder, note)
 MODULES = [
     ("api", "Core (front desk, folios, guests, rooms)", ""),
+    ("booking_requests", "Request to Book (accept / decline)", ""),
     ("pos", "Restaurant POS & kitchen", ""),
+    ("onboarding", "Setup checklist (finish setting up a property)", ""),
+    ("rates", "Rates (rate calendar, what moves a rate)", "These explain a price; they never set one. The quote is the only source of a charge."),
+    ("tickets", "Service tickets (assign, resolve, timeline)", ""),
+    ("guest_documents", "Guest documents (photo, ID and address proof images)", "Stored privately and served as data URLs to the desk. A property on Verify & Discard keeps no ID images."),
+    ("printing", "Kitchen printers (routing, print stations, print queue)", ""),
     ("laundry", "Laundry (housekeeping)", ""),
     ("banquet", "Banquets (functions, quotations, event orders)", ""),
     ("migrate", "Migration (CSV import)", ""),
+    ("golive", "Go-live data (companies, opening balances, reconciliation)", ""),
     ("inventory", "Inventory & recipes", ""),
     ("menu_import", "Menu bulk import", ""),
     ("id_documents", "Guest ID documents", ""),
     ("crs", "Central reservations (chain)", ""),
     ("dashboards", "Dashboards", ""),
     ("reports", "Reports", ""),
+    ("custom_reports", "Custom reports (builder, save, email)",
+     "Whitelisted datasets only - no Desk Query Reports or free SQL. "
+     "Saved definitions live on Kamra Custom Report; staff use Finance → Reports."),
+    ("ledger", "Ledgers (trial balance, city ledger / AR, FX desk)", ""),
+    ("credit", "Company credit (payment terms, credit limit, overdue check)",
+     "Credit control is enforced inside check_out, create_booking and city_ledger_transfer; these endpoints explain and configure it."),
+    ("night_audit", "Night audit (End of Day checklist, audit pack)", ""),
     ("agents_api", "Activity ledger", ""),
-    ("public_api", "Public (no auth - booking page, QR menu)",
+    ("settings", "Settings hub (module settings)", ""),
+    ("rooms", "Rooms (room board, room detail and history, insights)",
+     "Read-only. Room changes go through set_housekeeping_status, the room block endpoints, check_in / check_out and move_reservation."),
+    ("today_layout", "Today layout (per-user widgets, hotel default)", ""),
+    ("sop", "Desk procedures (check-out, check-in and other SOPs)", ""),
+    ("checkin", "Guided check-in (steps, who did each, room-charges permission)",
+     "kamra.api.check_in refuses until every check-in step the property marks required is done. check_in_readiness says what is missing."),
+    ("staff", "Staff & access", ""),
+    ("webhooks", "Outbound webhooks (subscriptions, delivery log)",
+     "Hotel Admin / System Manager. Events are signed with HMAC-SHA256 - see the Integrations page."),
+    ("pos_interface", "External POS (room charges from a third-party POS)",
+     "For a POS Integrator service user. ticket_id makes every posting idempotent."),
+    ("public_api", "Public (no auth - booking page, check-in)",
      "These are allow_guest endpoints: no token needed, rate-limited."),
 ]
 
@@ -168,7 +208,7 @@ outline: 2
 
 # REST API reference
 
-Every endpoint below is a whitelisted function — the same governed layer
+Every endpoint below is a whitelisted function - the same governed layer
 the UI and the AI use. **{total} endpoints**, generated from the source
 (`docs-site/gen_api.py`), so this page always matches the code.
 
@@ -209,7 +249,7 @@ Content-Type: application/json
                                f"{'' if d in (None,) else f'`{d}`'} |")
                 out.append("")
     with open(os.path.join(HERE, "api-reference.md"), "w") as md:  # nosemgrep: frappe-security-file-traversal -- path is derived from the app source tree, not from user input
-        md.write("\n".join(out))
+        md.write(_ascii_dashes("\n".join(out)))
     return total
 
 

@@ -14,8 +14,9 @@ from Frappe Cloud.
 - **Pricing:** Free
 - **License:** AGPL-3.0
 - **Category:** Hospitality (use **Other** if Hospitality is absent — do
-  **not** leave it on E-Commerce)
-- **Public listing (currently Not Available):** https://frappecloud.com/marketplace/apps/kamra
+  **not** leave it on E-Commerce; the live page still shows E-Commerce)
+- **Public listing (live):** https://frappecloud.com/marketplace/apps/kamra
+- **Stable release to publish:** `main` / **v2.6.16**
 
 ---
 
@@ -59,10 +60,11 @@ is pulled in automatically.
 
 ### What makes it different
 
-- **Agent-ready, not agent-locked.** An MCP server exposes 52 role-scoped
-  tools. Click Connect Claude — *"book Mr. Rao a deluxe for the
-  weekend with breakfast"* — it quotes, books, and logs every action. Bring
-  your own AI; there is no bundled model markup.
+- **Agent-ready, not agent-locked.** An MCP server exposes role-scoped
+  tools, filtered by the property's enabled modules. Click Connect Claude —
+  *"book Mr. Rao a deluxe for the weekend with breakfast"* — it quotes,
+  books, and logs every action. Bring your own AI; there is no bundled
+  model markup.
 - **Deterministic money.** Prices, taxes and availability come from a
   pricing engine, never from a language model. Tax slabs, multi-rate
   invoices and the no-overbooking guard are code, verified by an eval suite
@@ -77,9 +79,11 @@ is pulled in automatically.
 
 ### What's inside
 
-- **Front desk** — Today dashboard with paid/due chips, a guided check-in
-  flow with AI room suggestions, tape chart with a live house-position row,
-  ETA/ETD and changeover warnings, guest profile hub, blacklist.
+- **Front desk** — Today dashboard with paid/due chips, a one-screen walk-in
+  (book, ID, room, payment, check-in), a guided check-in flow with AI room
+  suggestions, room change from the reservation or the GRC, tape chart with
+  a live house-position row, ETA/ETD and changeover warnings, guest profile
+  hub, blacklist, and checkout that waits until every bill is settled.
 - **Direct booking engine** — a commission-free, SEO-friendly public
   booking page with check-in / check-out, Check availability, a photo
   gallery, live per-date rates, policies, FAQ, map and pay-at-hotel —
@@ -91,36 +95,50 @@ is pulled in automatically.
   Request-to-book.
 - **Bookings** — multi-room in one flow, group & corporate,
   booked-on-behalf, returning-guest typeahead, add-ons, travel agents with
-  commissions, day-use.
+  commissions, day-use, deposits taken before arrival.
 - **Revenue** — occupancy-based pricing, seasons, rate plans, vouchers,
   meal plans, rate guardrails, demand-tier hurdle rates, a code-enforced
   overbooking allowance, and cancellation/no-show/deposit policies
   enforced in code.
 - **Billing** — folios with per-line tax, corporate charge routing, group
   master folios, exact %/amount charge splits, automated night audit, tax
-  invoices with B2B fields, cashier reconciliation, payment links via
-  frappe/payments.
+  invoices with B2B fields, Opera-style cashier till (FO+POS cash, PIN
+  pad), append-only folio ledger, payment links via frappe/payments.
 - **Restaurant POS** — area-wise table map with live states, concurrent &
-  split bills, dine-in / room service / takeaway / delivery, 80mm thermal
-  KOT & bill printing, kitchen display, inventory & recipes, guest QR
-  ordering, room posting (alcohol-aware).
-- **Operations** — service tickets with SLA, a housekeeping mobile app,
-  end-to-end guest laundry, lost & found, shift handover, venues & events.
+  split bills, dine-in / room service / takeaway / delivery, full-screen
+  till and kitchen pass, 80mm thermal KOT & bill printing, kitchen display,
+  inventory & recipes, room posting (alcohol-aware).
+- **Operations** — service tickets with SLA, a housekeeping mobile app with
+  a supervisor room board, end-to-end guest laundry, lost & found, shift
+  handover.
+- **Banquets & events** — function management from enquiry to close-out:
+  floor plans, hall deals, menu pre-costing and margin, quotations by email
+  or WhatsApp, guest response, and department checklists on Confirm.
 - **Guests** — self check-in with ID & address-proof capture, printable
   GRC with the legal occupant register, editable actual times, a stay
   ledger with advances/deposits/guarded refunds, retention-aware ID
   handling.
+- **Privacy** — privacy by design for India's DPDP Act: complete erasure,
+  access export, retention schedules, and the guest notice in Hindi,
+  Kannada, Tamil, Telugu, Malayalam, Marathi and Bengali. Guest contact
+  details are hidden from the AI provider.
 - **Messaging** — WhatsApp on your own Meta Cloud API number: automatic
   booking confirmations, check-in links, desk payment requests and a
   conversations inbox.
 - **Localization** — country packs resolved per property: India GST
-  (slabs), Indonesia PB1, Thailand VAT, Malaysia SST, UAE VAT (TRN), and a
-  flat-tax generic for everywhere else; currency and number locale follow
-  the pack.
-- **Platform** — multi-property with per-user scoping, six-role RBAC, dark
-  mode, onboarding wizard, CSV migration importers (eZee / Cloudbeds
-  presets), and a 51-check eval harness + 13-journey front-desk persona
-  suite in CI.
+  (slabs), Saudi VAT with ZATCA e-invoicing (Phase 1) and room levy,
+  Indonesia PB1, Thailand VAT, Malaysia SST, UAE VAT (TRN), and a flat-tax
+  generic for everywhere else. Tax, invoices, ID types, payment modes and
+  statutory integrations follow the pack — India gets Razorpay and
+  Cashfree payment links, GSTR-1 and GSTIN / guest ID verification. English
+  and Arabic (RTL) interface.
+- **Platform** — multi-property with per-user property scoping enforced on
+  every record, six-role RBAC, webhooks that refuse unsigned calls, dark
+  mode, property time zone, System Health diagnostics, AI provider presets
+  (OpenAI, Gemini, Groq, OpenRouter, Ollama), onboarding wizard, CSV
+  migration importers (eZee / Cloudbeds presets), runs alongside ERPNext
+  (Company and stock), and an eval harness plus front-desk persona journeys
+  in CI.
 
 ### After install
 
@@ -196,12 +214,12 @@ and the support ticket.
 
 ---
 
-## Dashboard checklist (unhalt the listing)
+## Dashboard checklist (publish / update a release)
 
-The public page already exists at
-https://frappecloud.com/marketplace/apps/kamra and shows **Not Available**
-until a reviewer publishes. Automated Submission Gate
-`AUD-kamra-00003` is **22 passed / 1 minor warning** (no blocking Fail).
+The public page is live at
+https://frappecloud.com/marketplace/apps/kamra (installs are open).
+Automated Submission Gate `AUD-kamra-00003` was **22 passed / 1 minor
+warning** (no blocking Fail).
 
 Before publishing a new SHA:
 
@@ -211,36 +229,40 @@ python kamra/scripts/marketplace_install_check.py
 
 In https://frappecloud.com/dashboard → **Marketplace** → **Kamra**:
 
-1. **Overview** — paste Title, Short description, Long description above.
-2. **Category** — Hospitality or Other (currently E-Commerce).
-3. **Logo** — `branding/png/kamra-mark-512.png`.
-4. **Screenshots** — the 13 files above, in that order, with captions.
+1. **Overview** — paste Title, Short description, Long description above
+   (re-paste when the feature set changes).
+2. **Category** — switch from **E-Commerce** to **Hospitality** (or Other).
+3. **Logo** — `branding/png/kamra-mark-512.png` (confirm still current).
+4. **Screenshots** — the 13 files above, in that order, with captions
+   (confirm all are uploaded; the public page should show more than the logo).
 5. **Links** — Support + Privacy are mandatory; fill the rest too.
-6. **Releases** — create / select the `main` release at **v2.5.0**
-   (`7a50c56` / tag `v2.5.0`) and click **Publish**.
+6. **Releases** — create / select the `main` release at **v2.6.16** and
+   click **Publish** (or submit for approval if the dashboard still gates it).
 7. If a previous request is **Rejected**, cancel it and publish a new
    one from current `main`.
-8. If the app has been in Draft **more than 10 days**, raise a ticket at
-   https://support.frappe.io/ (SLA in the publishing docs).
+8. Optional but useful for reviewers: attach a 2–4 minute demo video
+   (see above).
 
-### Support ticket (paste)
+### Support ticket (paste — category / release update)
 
 ```
-Subject: Marketplace listing for Kamra (kamra) — request to complete review
+Subject: Marketplace listing for Kamra (kamra) — category + v2.6.16 release
 
 Hi Frappe Cloud team,
 
-The Kamra marketplace app is at https://frappecloud.com/marketplace/apps/kamra
-and still shows "Not Available" (Draft / no approved public release).
+Kamra is live at https://frappecloud.com/marketplace/apps/kamra.
+Please:
 
-We submitted earlier; Semgrep findings from that review were fixed in
-https://github.com/Kamra-PMS/kamra-pms/pull/16 and are on main. Stable
-release is v2.5.0 (Frappe v16, AGPL-3.0, required_apps = payments).
+1. Change the category from E-Commerce to Hospitality (or Other if
+   Hospitality is not available).
+2. Approve / publish the latest App Release from main at v2.6.16
+   (Frappe v16, AGPL-3.0, required_apps = payments).
 
-Please re-scan main and approve the latest release.
+Offline install checks and CI on main are green. Registry PR for
+v2.6.16 is open against frappe/marketplace.
 
 Repo: https://github.com/Kamra-PMS/kamra-pms
-Branch / tag: main / v2.5.0
+Branch / tag: main / v2.6.16
 Demo: https://demo.kamrapms.com
 Docs: https://kamrapms.com/docs/
 Support: https://kamrapms.com/support
@@ -254,18 +276,51 @@ Mohammed Azzan
 HeyKoala
 ```
 
-### discuss.frappe.io announcement (after it goes live)
+## Frappe marketplace registry (`frappe/marketplace`)
+
+Separate from the Frappe Cloud listing: the
+[frappe/marketplace](https://github.com/frappe/marketplace) repo is the
+registry `bench get-app` and Pilot read. Releases are commit-scoped and land
+by PR. Kamra's entry is `apps.json` (category `Applications`) plus
+`apps/kamra.json`. Current stable entry to add:
+
+```json
+{
+  "version": "2.6.16",
+  "branch": "main",
+  "commit": "e3341b8f5795795f041e95c31fa98e0603f15db7",
+  "frappe_core": ">=16.0.0-dev,<17.0.0",
+  "dependencies": { "payments": ">=0.0.1,<1.0.0" },
+  "channel": "stable"
+}
+```
+
+The registry CI reads `version` from the `__version__` line verbatim and
+rejects symlinks that point outside the repo, so keep the release-please
+marker on its own lines in `kamra/__init__.py`. To add a later release,
+from a checkout of the registry and of Kamra at the tag:
+
+```bash
+APP=kamra BRANCH=main COMMIT=<sha> CHANNEL=stable \
+  python3 tools/add_release.py --app-dir ../kamra-pms --registry .
+```
+
+Comment `/rereview` on the registry PR to re-run its checks after a fix.
+
+### discuss.frappe.io announcement (after a release update)
 
 ```
 Title: Kamra PMS — open-source hotel & short-term rental PMS on Frappe v16
 
 Kamra is an AGPL property management system for hotels and short-term
 rentals, built on Frappe v16. Front desk, direct booking, villa catalogs,
-POS, housekeeping, folios and tax billing — install from the Frappe Cloud
-Marketplace onto your site.
+POS, banquets, housekeeping, folios and tax billing (India GST, Saudi
+ZATCA, Gulf and South-East Asian VAT) — install from the Frappe Cloud
+Marketplace onto your site, or `bench get-app kamra` from the Frappe
+marketplace registry.
 
 - Marketplace: https://frappecloud.com/marketplace/apps/kamra
-- Release: https://github.com/Kamra-PMS/kamra-pms/releases/tag/v2.5.0
+- Release: https://github.com/Kamra-PMS/kamra-pms/releases/tag/v2.6.16
 - Live demo: https://demo.kamrapms.com
 - Villa catalog: https://demo.kamrapms.com/book
 - Docs: https://kamrapms.com/docs/

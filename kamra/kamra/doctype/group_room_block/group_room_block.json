@@ -5,16 +5,46 @@
  "doctype": "DocType",
  "editable_grid": 1,
  "engine": "InnoDB",
- "field_order": ["room_type", "rooms_blocked", "block_rate"],
+ "field_order": [
+  "room_type",
+  "rooms_blocked",
+  "rooms_released",
+  "block_rate"
+ ],
  "fields": [
-  {"fieldname": "room_type", "fieldtype": "Link", "label": "Room Type", "options": "Room Type", "reqd": 1, "in_list_view": 1},
-  {"fieldname": "rooms_blocked", "fieldtype": "Int", "label": "Rooms Blocked", "reqd": 1, "in_list_view": 1},
-  {"fieldname": "block_rate", "fieldtype": "Currency", "label": "Negotiated Rate / Night", "in_list_view": 1}
+  {
+   "fieldname": "room_type",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Room Type",
+   "options": "Room Type",
+   "reqd": 1
+  },
+  {
+   "fieldname": "rooms_blocked",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "Rooms Blocked",
+   "reqd": 1
+  },
+  {
+   "description": "Unpicked rooms given back to sale at the cutoff",
+   "fieldname": "rooms_released",
+   "fieldtype": "Int",
+   "label": "Rooms Released",
+   "read_only": 1
+  },
+  {
+   "fieldname": "block_rate",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "Negotiated Rate / Night"
+  }
  ],
  "index_web_pages_for_search": 0,
  "istable": 1,
  "links": [],
- "modified": "2026-07-06 00:00:00",
+ "modified": "2026-10-15 13:23:36.665208",
  "modified_by": "Administrator",
  "module": "Kamra",
  "name": "Group Room Block",

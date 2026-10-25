@@ -119,6 +119,31 @@ body {
   @apply bg-zinc-50 text-zinc-900 antialiased;
 }
 
+/* Dropdowns: the browser's own arrow sits flush against the border. Draw
+   our own chevron with room around it. Unlayered on purpose - it outranks
+   Tailwind's padding utilities (px-3 etc.), so every select gets the space
+   without touching each screen. */
+select:not([multiple]):not([size]) {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-inline-end: 2.25rem;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='%2378716c' stroke-width='1.75' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 8l4 4 4-4'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.7rem center;
+  background-size: 1rem 1rem;
+  text-overflow: ellipsis;
+}
+[dir="rtl"] select:not([multiple]):not([size]) {
+  background-position: left 0.7rem center;
+}
+.dark select:not([multiple]):not([size]) {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='%23a8a29e' stroke-width='1.75' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 8l4 4 4-4'/%3E%3C/svg%3E");
+}
+select:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 @keyframes sheet-in {
   from {
     transform: translateX(100%);
@@ -150,6 +175,12 @@ body {
   .animate-fade-in {
     animation: none;
   }
+}
+
+/* The audit pack and other report sheets print on A4. */
+@page {
+  size: A4;
+  margin: 14mm 12mm;
 }
 
 @media print {

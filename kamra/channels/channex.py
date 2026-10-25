@@ -13,7 +13,6 @@ same secret on both sides.
 
 from __future__ import annotations
 
-
 DEFAULT_ENDPOINT = "https://app.channex.io/api/v1"
 
 
@@ -94,6 +93,7 @@ def parse_webhook(conn, payload) -> list[dict]:
 			"phone": customer.get("phone") or "",
 			"email": customer.get("mail") or customer.get("email") or "",
 			"total": total,
+			"nightly": [{"date": k, "amount": float(v or 0)} for k, v in sorted(days.items())],
 			"currency": body.get("currency") or "",
 			"notes": body.get("notes") or "",
 		})

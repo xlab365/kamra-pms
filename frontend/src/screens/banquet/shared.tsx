@@ -4,7 +4,8 @@
 
 import type { ReactNode } from "react"
 import type { FunctionStatus } from "../../lib/api"
-import { cur, moneyLocale } from "../../lib/money"
+import { cur, locale, moneyLocale } from "../../lib/money"
+import { t as translate, useUILanguage, uiDateLocale } from "../../lib/i18n"
 
 export const inr = (n: unknown) =>
   cur() +
@@ -32,7 +33,8 @@ export const STATUSES: FunctionStatus[] = [
 export const NEXT: Record<FunctionStatus, FunctionStatus[]> = {
   Enquiry: ["Tentative", "Confirmed", "Cancelled", "Lost"],
   Tentative: ["Confirmed", "Enquiry", "Cancelled", "Lost"],
-  Confirmed: ["Completed", "Tentative", "Cancelled"],
+  // Completed is reached through Close out (covers + deposit), not a jump
+  Confirmed: ["Tentative", "Cancelled"],
   Completed: [],
   Cancelled: ["Enquiry"],
   Lost: ["Enquiry"],
@@ -157,6 +159,10 @@ export const SERVICE_STYLES = [
   "Boxed",
   "Cocktail",
 ]
+/** Banquet receipt modes, minus UPI where the country pack has no UPI. */
+export const payModes = () =>
+  PAY_MODES.filter((m) => m !== "UPI" || locale().payment_modes.includes("UPI"))
+
 export const PAY_MODES = [
   "Cash",
   "Card",
@@ -179,10 +185,10 @@ export function shiftDate(date: string, by: number) {
 }
 
 export const dayName = (d: string) =>
-  new Date(d + "T00:00:00").toLocaleDateString("en-US", { weekday: "short" })
+  new Date(d + "T00:00:00").toLocaleDateString(uiDateLocale("en-US"), { weekday: "short" })
 
 export const monthName = (ym: string) =>
-  new Date(ym + "-01T00:00:00").toLocaleDateString("en-US", {
+  new Date(ym + "-01T00:00:00").toLocaleDateString(uiDateLocale("en-US"), {
     month: "short",
     year: "numeric",
   })
@@ -201,6 +207,7 @@ export function StatusPill({
   status: FunctionStatus
   className?: string
 }) {
+  useUILanguage()
   return (
     <span
       className={
@@ -211,7 +218,7 @@ export function StatusPill({
         className
       }
     >
-      {status}
+      {translate(status)}
     </span>
   )
 }
@@ -227,13 +234,14 @@ export function Field({
   children: ReactNode
   className?: string
 }) {
+  useUILanguage()
   return (
     <label className={"block " + className}>
       <span className="mb-1 block text-xs font-medium text-zinc-500">
-        {label}
+        {translate(label)}
       </span>
       {children}
-      {hint && <span className="mt-1 block text-[11px] text-zinc-400">{hint}</span>}
+      {hint && <span className="mt-1 block text-[11px] text-zinc-400">{translate(hint)}</span>}
     </label>
   )
 }
@@ -249,6 +257,7 @@ export function Select({
   options: readonly string[]
   className?: string
 }) {
+  useUILanguage()
   return (
     <select
       className={inputCls + " " + className}
@@ -257,7 +266,7 @@ export function Select({
     >
       {options.map((o) => (
         <option key={o} value={o}>
-          {o}
+          {translate(o)}
         </option>
       ))}
     </select>
@@ -275,22 +284,24 @@ export function Stat({
   sub?: ReactNode
   tone?: string
 }) {
+  useUILanguage()
   return (
     <div className="rounded-xl border border-zinc-200 bg-white px-4 py-3">
       <p className="text-[11px] font-medium uppercase tracking-wider text-zinc-400">
-        {label}
+        {translate(label)}
       </p>
       <p className={"mt-1 text-xl font-semibold tabular-nums " + tone}>{value}</p>
-      {sub && <p className="mt-0.5 text-xs text-zinc-400">{sub}</p>}
+      {sub && <p className="mt-0.5 text-xs text-zinc-400">{translate(sub)}</p>}
     </div>
   )
 }
 
 export function ErrorNote({ error }: { error: string | null }) {
+  useUILanguage()
   if (!error) return null
   return (
     <div className="mb-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
-      {error}
+      {translate(error)}
     </div>
   )
 }

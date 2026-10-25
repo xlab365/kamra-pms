@@ -16,7 +16,7 @@ import frappe
 from frappe.utils import add_days, date_diff, getdate
 
 # Single source: kamra.reservation_state (ADR-006).
-from kamra.reservation_state import LIVE_STATUSES  # noqa: F401
+from kamra.reservation_state import LIVE_STATUSES
 
 
 def availability(
@@ -63,6 +63,9 @@ def availability(
 
 	# Competition state per night per group (ADR-004).
 	group_state = _competition_state(units, bookings, nights)
+	# Villa <-> room lockout per night, whether or not the units share a
+	# competition group (the same rule validate_villa_lockout enforces).
+	villa_lock = _villa_lockout_state(bookings, nights)
 
 	out = []
 	for unit in units:
@@ -74,6 +77,7 @@ def availability(
 			blocks=blocks,
 			group_state=group_state,
 			include_reasons=include_reasons,
+			villa_lock=villa_lock,
 		)
 		out.append(row)
 	return out
@@ -351,11 +355,15 @@ def _competition_state(
 			continue
 		category = frappe.db.get_value("Room Type", rt, "room_category")
 		if category == "Villa":
-			for g, lst in units_by_group.items():
-				for u in lst:
-					if u["unit_kind"] == "whole_property" and u["room_type"] == rt:
-						bookings_by_siu[u["name"]].append(b)
-						break
+			# the FIRST matching whole-property unit, across all groups - a
+			# bare `break` only left the inner loop, so one stay was counted
+			# against a unit in every group
+			unit = next(
+				(u for lst in units_by_group.values() for u in lst
+				 if u["unit_kind"] == "whole_property" and u["room_type"] == rt),
+				None)
+			if unit:
+				bookings_by_siu[unit["name"]].append(b)
 
 	state: dict[str, dict[str, dict[str, int]]] = {}
 	for g, lst in units_by_group.items():
@@ -380,6 +388,20 @@ def _competition_state(
 	return state
 
 
+def _villa_lockout_state(bookings: list[dict], nights: list[str]) -> dict:
+	"""night -> {"villa": reservation or None, "rooms": reservation or None}:
+	the live whole-villa / member-room booking covering that night. Uses
+	is_entire_place, the test the write-time villa lockout uses."""
+	from kamra.kamra.doctype.reservation.reservation import is_entire_place
+	state = {n: {"villa": None, "rooms": None} for n in nights}
+	for b in bookings:
+		side = "villa" if is_entire_place(b.get("room_type")) else "rooms"
+		for n in nights:
+			if state[n][side] is None and _covers(b, n):
+				state[n][side] = b["name"]
+	return state
+
+
 def _unit_availability(
 	unit: dict,
 	nights: list[str],
@@ -389,10 +411,15 @@ def _unit_availability(
 	blocks: dict,
 	group_state: dict,
 	include_reasons: bool,
+	villa_lock: dict | None = None,
 ) -> dict:
+	from kamra.kamra.doctype.reservation.reservation import is_entire_place
 	sellable_per_night = []
 	blocked: list[dict] = []
 	rooms = unit.get("rooms") or []
+	# a whole-villa unit is locked out by a booked member room, and the
+	# other way round
+	lock_side = "rooms" if is_entire_place(unit.get("room_type")) else "villa"
 
 	for night in nights:
 		reasons = []
@@ -464,6 +491,13 @@ def _unit_availability(
 							"reference": unit["competition_group"],
 						}
 					)
+
+		lock = (villa_lock or {}).get(night, {}).get(lock_side)
+		if lock:
+			free = 0
+			reasons.append(
+				{"date": night, "reason": "villa_lockout", "reference": lock}
+			)
 
 		sellable_per_night.append(free)
 		if include_reasons:

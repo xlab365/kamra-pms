@@ -14,10 +14,12 @@ runs in `.github/workflows/ci.yml` on every push to main.
 from __future__ import annotations
 
 import ast
+import os
 import re
 import sys
-import tomllib
 from pathlib import Path
+
+import tomllib
 
 ROOT = Path(__file__).resolve().parents[2]
 APP = ROOT / "kamra"
@@ -116,6 +118,21 @@ def check_semgrep_same_line() -> None:
 	ok("every frappe.set_user / db.commit has same-line nosemgrep")
 
 
+def check_no_symlinks() -> None:
+	"""The FC audit fails the whole app on any symlink ("causes build
+	errors"). Editor and agent config folders have tripped it before."""
+	found: list[str] = []
+	for dirpath, dirnames, filenames in os.walk(ROOT):
+		dirnames[:] = [d for d in dirnames if d not in (".git", "node_modules")]
+		for name in dirnames + filenames:
+			p = Path(dirpath) / name
+			if p.is_symlink():
+				found.append(str(p.relative_to(ROOT)))
+	if found:
+		fail("symlinks in the app (Frappe Cloud audit rejects them):\n  " + "\n  ".join(found))
+	ok("no symlinks in the app")
+
+
 def check_listing_copy() -> None:
 	md = (ROOT / "docs" / "marketplace-listing.md").read_text()
 	# The paste-ready long description lives in a markdown fence.
@@ -128,17 +145,19 @@ def check_listing_copy() -> None:
 	ok("listing long description has no extra URLs")
 
 
-def main() -> None:
+def main() -> int:
 	print("Kamra marketplace install simulation (offline)\n")
 	check_pyproject()
 	check_hooks()
 	check_shipped_spa()
 	check_license_and_package()
 	check_semgrep_same_line()
+	check_no_symlinks()
 	check_listing_copy()
 	print("\nMARKETPLACE-INSTALL CHECKS PASSED")
 	print("Full bench path: GitHub Actions → Backend eval harness")
 	print("  bench get-app payments && bench get-app kamra && install-app")
+	return 0
 
 
 if __name__ == "__main__":

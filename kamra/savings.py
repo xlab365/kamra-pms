@@ -12,6 +12,7 @@ the timeline can support undo.
 """
 
 import json
+import traceback
 
 import frappe
 
@@ -33,8 +34,10 @@ def log_action(
 	executed_at=None,
 ) -> str | None:
 	"""Write one row to the savings ledger. Never raises — logging must
-	not break the business action it describes. Returns the log row name,
-	or None if the write failed.
+	not break the business action it describes — but never fails silently
+	either: an unknown channel is mapped to an allowed one, and a row that
+	still fails is reported (server log + Error Log) and retried once with
+	the minimal fields. Returns the log row name, or None if both failed.
 
 	Snapshots may be passed as dicts/lists (they're JSON-serialised here)
 	or as pre-serialised strings. executed_at defaults to now() for
@@ -42,34 +45,107 @@ def log_action(
 	Suggested and Pending — the moment the action ran, not when it was
 	proposed.
 	"""
+	if executed_at is None and approval_status in ("Executed", "Approved", "Rejected"):
+		executed_at = frappe.utils.now_datetime()
+	channel, note = _normalise_channel(channel)
+	row = {
+		"doctype": "Agent Action Log",
+		"actor": getattr(frappe.session, "user", None),
+		# humans are the actor, not an "agent" — agent_name stays null
+		"agent_name": agent_name,
+		"action_type": action_type,
+		"autonomy": autonomy,
+		"approval_status": approval_status,
+		"action_channel": channel,
+		"reference_doctype": reference_doctype,
+		"reference_name": reference_name,
+		"property": property,
+		"minutes_saved": minutes_saved,
+		"rationale": str(rationale or "") + note,
+		"approver": approver,
+		"before_snapshot": _serialise_snapshot(before_snapshot),
+		"after_snapshot": _serialise_snapshot(after_snapshot),
+		"executed_at": executed_at,
+	}
 	try:
-		if executed_at is None and approval_status in ("Executed", "Approved", "Rejected"):
-			executed_at = frappe.utils.now_datetime()
-		doc = frappe.get_doc(
-			{
-				"doctype": "Agent Action Log",
-			"actor": getattr(frappe.session, "user", None),
-				# humans are the actor, not an "agent" — agent_name stays null
-				"agent_name": agent_name,
-				"action_type": action_type,
-				"autonomy": autonomy,
-				"approval_status": approval_status,
-				"action_channel": channel,
-				"reference_doctype": reference_doctype,
-				"reference_name": reference_name,
-				"property": property,
-				"minutes_saved": minutes_saved,
-				"rationale": rationale,
-				"approver": approver,
-				"before_snapshot": _serialise_snapshot(before_snapshot),
-				"after_snapshot": _serialise_snapshot(after_snapshot),
-				"executed_at": executed_at,
-			}
-		).insert(ignore_permissions=True)
-		return doc.name
-	except Exception:
-		frappe.log_error(title="Agent Action Log write failed")
+		return _insert(row)
+	except Exception as exc:
+		first = exc
+	# The row didn't validate. Losing it silently is how agent actions went
+	# missing from the activity log, so: record why, loudly, and retry once
+	# with only the fields that can't fail validation.
+	_report_failure(action_type, row, first)
+	fallback = {k: row[k] for k in (
+		"doctype", "actor", "action_type", "approval_status", "action_channel",
+		"property", "minutes_saved", "executed_at")}
+	fallback["agent_name"] = agent_name
+	fallback["rationale"] = (
+		f"{row['rationale']}\n\n[log fallback: full row failed — "
+		f"{type(first).__name__}: {first}; channel={channel}, "
+		f"ref={reference_doctype} {reference_name}]"
+	).strip()[:5000]
+	try:
+		return _insert(fallback)
+	except Exception as exc:
+		_report_failure(action_type, fallback, exc, fallback=True)
 		return None
+
+
+# The Select only takes Desk / Voice / WhatsApp / API / Chat / MCP. The one
+# off-list name a caller passes today is a channel provider's "SMS"; any
+# other unknown name also lands on API rather than failing the row.
+_CHANNEL_ALIASES = {"sms": "API"}
+
+
+def _normalise_channel(channel: str | None) -> tuple[str | None, str]:
+	"""(allowed channel, rationale note). Unknown channels map to an alias or
+	"API", and the original name is kept in the rationale."""
+	if not channel:
+		return None, ""
+	field = frappe.get_meta("Agent Action Log").get_field("action_channel")
+	allowed = [o for o in (field.options or "").split("\n") if o]
+	if channel in allowed:
+		return channel, ""
+	by_lower = {o.lower(): o for o in allowed}
+	mapped = by_lower.get(channel.lower()) or _CHANNEL_ALIASES.get(channel.lower())
+	if mapped not in allowed:
+		mapped = "API" if "API" in allowed else None
+	return mapped, f" [channel: {channel}]"
+
+
+def _insert(row: dict) -> str:
+	"""Insert under a savepoint so a failed row never poisons the caller's
+	transaction (the business action it describes must still commit)."""
+	sp = "aal_" + frappe.generate_hash(length=8)
+	frappe.db.savepoint(sp)
+	try:
+		name = frappe.get_doc(dict(row)).insert(ignore_permissions=True).name
+	except Exception:
+		frappe.db.rollback(save_point=sp)
+		raise
+	frappe.db.release_savepoint(sp)
+	return name
+
+
+def _report_failure(action_type, row, exc, *, fallback=False) -> None:
+	"""Make a failed log write visible: server log + Error Log row. Never
+	raises - the business action it describes must still succeed."""
+	what = "fallback write" if fallback else "write"
+	title = f"Agent Action Log {what} failed: {action_type}"[:140]
+	detail = {k: v for k, v in row.items()
+	          if k not in ("before_snapshot", "after_snapshot")}
+	try:
+		frappe.logger("kamra.savings").error(
+			f"{title}: {type(exc).__name__}: {exc} | {detail}")
+		frappe.log_error(
+			title=title,
+			message="".join(traceback.format_exception(exc))
+			+ f"\n\nRow: {frappe.as_json(detail)}",
+			reference_doctype=row.get("reference_doctype") or None,
+			reference_name=row.get("reference_name") or None,
+		)
+	except Exception:
+		pass  # logging the failure must never break the caller
 
 
 def mark_approved(log_name: str, approver: str) -> None:

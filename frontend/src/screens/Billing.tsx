@@ -1,11 +1,14 @@
+
 import { useCallback, useEffect, useState } from "react"
 import { MoonStar } from "lucide-react"
 import { useNavigate } from "react-router-dom"
-import { call, getCurrentProperty } from "../lib/api"
-import { listResource, serverError, type Row } from "../lib/resource"
+import { getCurrentProperty } from "../lib/api"
+import { listResource, type Row } from "../lib/resource"
+import { auditHistory, type RunRow } from "../lib/eod"
 import { Badge } from "../components/ui/badge"
 import { Button } from "../components/ui/button"
 import { cur, moneyLocale } from "../lib/money"
+import { useT, uiDateLocale } from "../lib/i18n"
 import {
   Card,
   CardContent,
@@ -18,7 +21,7 @@ const inr = (n: unknown) =>
 
 const fmtDate = (d: unknown) =>
   d
-    ? new Date(String(d) + "T00:00:00").toLocaleDateString("en-IN", {
+    ? new Date(String(d) + "T00:00:00").toLocaleDateString(uiDateLocale("en-IN"), {
         day: "2-digit",
         month: "short",
         year: "numeric",
@@ -27,33 +30,15 @@ const fmtDate = (d: unknown) =>
 const fmtWhen = (d: unknown) =>
   d
     ? new Date(String(d).replace(" ", "T").slice(0, 19)).toLocaleString(
-        "en-IN",
+        uiDateLocale("en-IN"),
         { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" },
       )
     : ""
 
-interface CashSummary {
-  date: string
-  modes: { mode: string; txns: number; total: number }[]
-  grand_total: number
-}
-
-interface AuditResult {
-  audit?: string
-  already_ran?: boolean
-  room_charges_posted?: number
-  amount_posted?: number
-  no_shows_flagged?: number
-  folios_opened?: number
-}
-
 export default function Billing() {
+  const { t } = useT()
   const [folios, setFolios] = useState<Row[]>([])
-  const [cash, setCash] = useState<CashSummary | null>(null)
-  const [audit, setAudit] = useState<AuditResult | null>(null)
-  const [auditErr, setAuditErr] = useState<string | null>(null)
-  const [auditRuns, setAuditRuns] = useState<Row[]>([])
-  const [busy, setBusy] = useState(false)
+  const [auditRuns, setAuditRuns] = useState<RunRow[]>([])
   const navigate = useNavigate()
 
   const load = useCallback(() => {
@@ -65,108 +50,76 @@ export default function Billing() {
       filters: [["property", "=", getCurrentProperty()]],
       orderBy: "modified desc",
     }).then(setFolios)
-    call<CashSummary>("kamra.api.cash_summary", {
-      property: getCurrentProperty(),
-    }).then(setCash)
-    listResource("Night Audit Run", {
-      fields: [
-        "name", "business_date", "status", "room_charges_posted",
-        "amount_posted", "no_shows_flagged", "folios_opened", "creation",
-      ],
-      filters: [["property", "=", getCurrentProperty()]],
-      orderBy: "creation desc",
-      limit: 8,
-    })
+    auditHistory(getCurrentProperty(), 8)
       .then(setAuditRuns)
       .catch(() => setAuditRuns([]))
   }, [])
 
   useEffect(load, [load])
 
-  async function runAudit() {
-    setBusy(true)
-    setAuditErr(null)
-    setAudit(null)
-    try {
-      const res = await call<AuditResult>("kamra.api.run_night_audit", {
-        property: getCurrentProperty(),
-      })
-      setAudit(res)
-      load()
-    } catch (e) {
-      setAuditErr(serverError(e))
-    } finally {
-      setBusy(false)
-    }
-  }
-
   return (
     <div className="space-y-4">
       <Card>
         <CardHeader>
           <div>
-            <CardTitle>Night audit</CardTitle>
+            <CardTitle>{t("Night audit")}</CardTitle>
             <p className="mt-0.5 text-xs text-zinc-400">
-              Posts tonight's room charges for every in-house guest and flags
-              no-shows. Runs automatically at 3 AM; run it manually anytime.
+              {t("End of Day walks the night audit checklist, posts room and tax, rolls the business date and prints the audit pack. Runs automatically at 3 AM.")}
             </p>
           </div>
-          <Button disabled={busy} onClick={runAudit}>
+          <Button onClick={() => navigate(`/end-of-day/${encodeURIComponent(getCurrentProperty())}`)}>
             <MoonStar className="size-4" aria-hidden />
-            {busy ? "Running…" : "Run night audit"}
+            {t("Open End of Day")}
           </Button>
         </CardHeader>
-        {auditErr && (
-          <CardContent className="pt-0">
-            <p className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
-              {auditErr}
-            </p>
-          </CardContent>
-        )}
-        {audit && (
-          <CardContent className="pt-0">
-            {audit.already_ran ? (
-              <p className="text-sm text-zinc-500">
-                Already ran for today ({audit.audit}).
-              </p>
-            ) : (
-              <p className="text-sm text-zinc-600">
-                <span className="font-medium">{audit.audit}</span> - posted{" "}
-                {audit.room_charges_posted} room night
-                {audit.room_charges_posted === 1 ? "" : "s"} ({cur()}
-                {inr(audit.amount_posted)}), opened {audit.folios_opened}{" "}
-                folio{audit.folios_opened === 1 ? "" : "s"}, flagged{" "}
-                {audit.no_shows_flagged} no-show
-                {audit.no_shows_flagged === 1 ? "" : "s"}.
-              </p>
-            )}
-          </CardContent>
-        )}
         {auditRuns.length > 0 && (
           <CardContent className="pt-0">
-            <div className="mb-1.5 text-xs font-medium uppercase tracking-wider text-zinc-400">
-              Recent runs
+            <div className="mb-1.5 flex items-center justify-between">
+              <span className="text-xs font-medium uppercase tracking-wider text-zinc-400">
+                {t("Recent runs")}
+              </span>
+              <button type="button" className="text-xs text-brand-700 hover:underline" onClick={() => navigate("/end-of-day")}>
+                {t("All audits")}
+              </button>
             </div>
             <ul className="divide-y divide-zinc-100 text-sm">
               {auditRuns.map((r) => (
                 <li
-                  key={String(r.name)}
+                  key={r.name}
                   className="flex flex-wrap items-center justify-between gap-x-3 gap-y-0.5 py-1.5"
                 >
                   <span className="w-28 font-medium">
                     {fmtDate(r.business_date)}
                   </span>
                   <span className="flex-1 text-zinc-500">
-                    {Number(r.room_charges_posted) || 0} night
-                    {Number(r.room_charges_posted) === 1 ? "" : "s"} · {cur()}
-                    {inr(r.amount_posted)} · {Number(r.folios_opened) || 0} folio
-                    {Number(r.folios_opened) === 1 ? "" : "s"} ·{" "}
-                    {Number(r.no_shows_flagged) || 0} no-show
-                    {Number(r.no_shows_flagged) === 1 ? "" : "s"}
+                    {t("{n} night{s} · {amount} · {folios} folio{s2} · {noShows} no-show{s3}", {
+                      n: Number(r.room_charges_posted) || 0,
+                      s: Number(r.room_charges_posted) === 1 ? "" : "s",
+                      amount: `${cur()}${inr(r.amount_posted)}`,
+                      folios: Number(r.folios_opened) || 0,
+                      s2: Number(r.folios_opened) === 1 ? "" : "s",
+                      noShows: Number(r.no_shows_flagged) || 0,
+                      s3: Number(r.no_shows_flagged) === 1 ? "" : "s",
+                    })}
+                    {Number(r.late_arrivals_held) > 0 &&
+                      ` · ${t("{n} late arrival(s) held", { n: Number(r.late_arrivals_held) })}`}
+                    {Number(r.exceptions) > 0 &&
+                      ` · ${t("{n} exception(s)", { n: Number(r.exceptions) })}`}
                   </span>
                   <span className="text-xs text-zinc-400">
-                    ran {fmtWhen(r.creation)}
+                    {t("ran {when}", { when: fmtWhen(r.creation) })}
                   </span>
+                  {r.has_pack ? (
+                    <button
+                      type="button"
+                      className="text-xs text-brand-700 hover:underline"
+                      onClick={() => navigate(`/end-of-day/pack/${encodeURIComponent(r.name)}`)}
+                    >
+                      {t("View audit pack")}
+                    </button>
+                  ) : (
+                    <span className="text-xs text-zinc-300">{t("No pack")}</span>
+                  )}
                 </li>
               ))}
             </ul>
@@ -177,32 +130,22 @@ export default function Billing() {
       <Card>
         <CardHeader>
           <div>
-            <CardTitle>Today's collections</CardTitle>
+            <CardTitle>{t("Cashier till")}</CardTitle>
             <p className="mt-0.5 text-xs text-zinc-400">
-              What the system says was collected - the drawer must match this
-              at shift close.
+              {t("Open your till, reconcile cash and close the session under Finance → Cashier. Collections live there now.")}
             </p>
           </div>
-          <span className="text-xl font-semibold">
-            {cur()}{inr(cash?.grand_total ?? 0)}
-          </span>
+          <Button variant="outline" onClick={() => navigate("/cashier")}>
+            {t("Open My Till")}
+          </Button>
         </CardHeader>
-        {cash && cash.modes.length > 0 && (
-          <CardContent className="flex flex-wrap gap-2 pt-0">
-            {cash.modes.map((m) => (
-              <Badge key={m.mode} tone="zinc">
-                {m.mode}: {cur()}{inr(m.total)} · {m.txns} txn
-              </Badge>
-            ))}
-          </CardContent>
-        )}
       </Card>
 
       <Card>
         <CardHeader>
-          <CardTitle>Folios</CardTitle>
+          <CardTitle>{t("Folios")}</CardTitle>
           <span className="text-xs text-zinc-400">
-            Click a folio to post charges, settle and print the GST invoice
+            {t("Click a folio to post charges, settle and print the GST invoice")}
           </span>
         </CardHeader>
         <CardContent>
@@ -210,13 +153,13 @@ export default function Billing() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-zinc-200 text-left text-xs font-medium uppercase tracking-wider text-zinc-500">
-                  <th className="py-2 pr-4">Folio</th>
-                  <th className="py-2 pr-4">Guest</th>
-                  <th className="py-2 pr-4">Status</th>
-                  <th className="py-2 pr-4">Invoice</th>
-                  <th className="py-2 pr-4">Total {cur()}</th>
-                  <th className="py-2 pr-4">Paid {cur()}</th>
-                  <th className="py-2 pr-4">Balance {cur()}</th>
+                  <th className="py-2 pr-4">{t("Folio")}</th>
+                  <th className="py-2 pr-4">{t("Guest")}</th>
+                  <th className="py-2 pr-4">{t("Status")}</th>
+                  <th className="py-2 pr-4">{t("Invoice")}</th>
+                  <th className="py-2 pr-4">{t("Total {cur}", { cur: cur() })}</th>
+                  <th className="py-2 pr-4">{t("Paid {cur}", { cur: cur() })}</th>
+                  <th className="py-2 pr-4">{t("Balance {cur}", { cur: cur() })}</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-zinc-100">
@@ -230,7 +173,7 @@ export default function Billing() {
                     <td className="py-2.5 pr-4">{String(f.guest_name ?? "-")}</td>
                     <td className="py-2.5 pr-4">
                       <Badge tone={f.status === "Open" ? "amber" : "green"}>
-                        {String(f.status)}
+                        {t(String(f.status))}
                       </Badge>
                     </td>
                     <td className="py-2.5 pr-4 text-zinc-500">
@@ -250,7 +193,7 @@ export default function Billing() {
                 {folios.length === 0 && (
                   <tr>
                     <td colSpan={7} className="py-6 text-center text-zinc-400">
-                      No folios yet - they open automatically at check-in.
+                      {t("No folios yet - they open automatically at check-in.")}
                     </td>
                   </tr>
                 )}

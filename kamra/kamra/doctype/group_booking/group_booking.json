@@ -17,6 +17,7 @@
   "status",
   "notes",
   "cutoff_date",
+  "released_on",
   "event",
   "sb_blocks",
   "blocks"
@@ -41,7 +42,7 @@
    "fieldname": "company",
    "fieldtype": "Link",
    "label": "Company",
-   "options": "Company"
+   "options": "Corporate Account"
   },
   {
    "fieldname": "column_break_a",
@@ -75,10 +76,17 @@
    "label": "Notes"
   },
   {
+   "description": "Unsold blocked rooms release back to inventory after this date",
    "fieldname": "cutoff_date",
    "fieldtype": "Date",
-   "label": "Block Cutoff Date",
-   "description": "Unsold blocked rooms release back to inventory after this date"
+   "label": "Block Cutoff Date"
+  },
+  {
+   "description": "When the unpicked rooms went back on sale (set automatically once the cutoff passes)",
+   "fieldname": "released_on",
+   "fieldtype": "Datetime",
+   "label": "Block Released On",
+   "read_only": 1
   },
   {
    "fieldname": "event",
@@ -101,7 +109,7 @@
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-07-04 16:01:36.771332",
+ "modified": "2026-10-15 13:23:36.664745",
  "modified_by": "Administrator",
  "module": "Kamra",
  "name": "Group Booking",

@@ -14,10 +14,13 @@ and `npm run dev` in `frontend/` for the SPA.
 
 - **`develop`** — the integration branch and the *nightly* channel. All PRs
   target `develop` (it's the default branch). nightly.kamrapms.com and the
-  `ghcr.io/kamra-pms/kamra:nightly` image are rebuilt from it every night.
+  private `ghcr.io/kamra-pms/kamra:nightly` image (Kamra-operated hosts only)
+  are rebuilt from it every night.
 - **`main`** — the stable branch. Only release trains (maintainer merges of
   `develop`) and hotfixes land here; the Frappe Cloud Marketplace listing and
-  demo.kamrapms.com track its releases.
+  demo.kamrapms.com track its releases. Paste-ready listing copy and the
+  publisher checklist live in [`docs/marketplace-listing.md`](docs/marketplace-listing.md);
+  the install guide for hotels is [`docs-site/self-hosting/frappe-cloud.md`](docs-site/self-hosting/frappe-cloud.md).
 
 ### Branch naming
 
@@ -46,6 +49,45 @@ See [`RELEASING.md`](RELEASING.md) for the full release process.
   it still reports all checks passing.
 - CI runs both automatically on every PR; a fresh-install check also verifies
   a brand-new site installs cleanly with your change.
+
+### What your PR needs, and what it doesn't
+
+You **do** need to:
+
+- **Add an eval check for a backend fix.** Write a check in
+  `kamra/scripts/eval_harness.py` that fails without your fix, and add it to
+  the list in `execute()`. Before you pick a name (`t<number>`), check the
+  open PRs as well as `develop`. Two functions with the same name don't
+  error: the second silently replaces the first. When you resolve a merge
+  conflict in that list, keep every entry from both sides.
+- **Leave state as you found it in that check.** The harness only rolls a
+  check back when it fails. Restore any Property setting you change (business
+  date, PIN, policies) in a `finally` block. Use a guest phone number no other
+  check uses.
+- **Use `kamra.authz.act_as(user)` to run code as another user,** for example
+  the agent user (`kamra.install.AGENT_EMAIL`). A bare `frappe.set_user()`
+  swap wipes the caller's session and logs staff out.
+- **Annotate `frappe.set_user(` or `frappe.db.commit(` calls** with the
+  `nosemgrep` comment on the same line. The install check also flags a
+  comment or docstring line that *starts* with either call, so word those
+  differently.
+- **Commit the rebuilt frontend** (`kamra/public/frontend`) when you change
+  the UI, and re-run `docs-site/gen_api.py` and `docs-site/gen_mcp_tools.py`
+  when you change an endpoint or an MCP tool.
+- **Add a patch in `kamra/patches.txt`** when a fix changes how new records
+  are written and old records need the same correction. The patch must be
+  safe to run twice.
+
+You **don't** need to:
+
+- Edit `CHANGELOG.md`, the README's "What's new", or the version. Maintainers
+  write the release notes when they cut a train (see
+  [`RELEASING.md`](RELEASING.md)). A clear Conventional Commit title is
+  enough.
+- Merge `develop` into your branch again and again. Do it once if CI or
+  GitHub reports a conflict.
+- Target `main`. Every PR goes to `develop`, except a hotfix that a
+  maintainer has asked for.
 
 ## Commit messages
 
@@ -101,10 +143,34 @@ decides the next version is a MAJOR bump.
 
 ## Country packs
 
-Localization lives behind the `kamra_localization` hook
-(`kamra/localization/`); India ships as the reference pack. A new country
-pack implements the same interface (tax calculation, invoice context, locale)
-without touching the core. See `kamra/localization/india.py` for the shape.
+Localization lives behind the `kamra_localization` hook in `hooks.py`,
+which maps a country name to a module in `kamra/localization/`. Countries
+without a pack get `generic.py` (one flat rate).
+
+A pack is a plain module:
+
+- **Required:** `calculate_room_tax`, `fnb_tax_rate`, `tax_rate_options`,
+  `invoice_context` and `locale`.
+- **Optional:** `service_code_for`, `tax_split` and `amount_in_words` for
+  invoice printing; constants such as `ID_TYPES`, `PAYMENT_MODES`,
+  `DEFAULT_CURRENCY`, `NOTICE_LANGUAGES`, `ADULT_AGE` and `MINOR_IDS`.
+- **Country-only integrations:** `PAYMENT_GATEWAYS` plus `payment_provider`,
+  `tax_return_rows`, `verify_tax_id` and `verify_guest_id`. If a pack leaves
+  these out, the country simply doesn't get the feature. Kamra never
+  borrows another country's.
+
+The full interface is in the docstring of `kamra/localization/__init__.py`.
+`thailand.py` is the smallest pack to copy. `india/` shows integrations;
+`saudi.py` shows e-invoicing hooks. Add an eval check for the new pack's
+tax and invoice labels.
+
+## Credit
+
+Every merged PR is credited in the release notes and on the
+[Contributors](https://kamrapms.com/docs/contributors) page, and an
+issue that shapes a feature earns its reporter a line there too. Security
+reporters are credited in the advisory, `SECURITY.md` and the release
+that fixes it.
 
 ## Code of conduct
 

@@ -4,7 +4,7 @@ Flow: the desk (or the floor) logs a pickup request -> an attendant
 collects and counts the items with the guest (priced from the property's
 rate card, never by the caller) -> the bag moves In Process -> Ready ->
 items are returned piece by piece -> delivery posts the bill to the
-guest's folio at the services GST rate. Shortages block delivery unless
+guest's folio at the country pack's services tax rate. Shortages block delivery unless
 they're explicitly noted, so a missing shirt is a decision, not an
 accident.
 """
@@ -13,15 +13,22 @@ import frappe
 from frappe import _
 from frappe.utils import add_to_date, get_datetime, now_datetime
 
-from kamra.authz import require_roles
+from kamra.authz import act_as, require_roles
+from kamra.install import AGENT_EMAIL
 
 LAUNDRY_ROLES = ("Housekeeping", "Front Desk", "Kamra Agent")
 RATE_ROLES = ("Front Desk", "Finance", "Kamra Agent")
 SERVICES = ("Wash & Iron", "Dry Clean", "Iron Only")
-LAUNDRY_GST = 18.0  # services rate; resolved server-side on posting
 
 
 # ── the rate card ────────────────────────────────────────────────────────
+
+
+def express_multiplier(property: str | None) -> float:
+	"""Express price when a rate card line leaves it blank (Settings ->
+	Housekeeping, default 1.5x regular)."""
+	from kamra.settings import get_setting
+	return float(get_setting(property, "laundry_express_multiplier"))
 
 @frappe.whitelist()
 @require_roles(*LAUNDRY_ROLES, "Finance")
@@ -34,18 +41,18 @@ def laundry_rates(property: str):
 		order_by="item_name, service_type")
 	for r in rows:
 		r["express_rate"] = float(r.express_rate or 0) or round(
-			float(r.rate) * 1.5, 0)
+			float(r.rate) * express_multiplier(property), 0)
 	return rows
 
 
 @frappe.whitelist(methods=["POST"])
-@require_roles(*RATE_ROLES)
+@require_roles(*RATE_ROLES, scope={"name": "Laundry Rate"})
 def save_laundry_rate(property: str, item_name: str, service_type: str,
                       rate: float, express_rate=None, name: str | None = None,
                       disabled: int = 0):
 	"""Add or edit one line of the rate card."""
 	if service_type not in SERVICES:
-		frappe.throw(_("Service must be one of: ") + ", ".join(SERVICES))
+		frappe.throw(_("Service must be one of: {0}").format(", ".join(SERVICES)))
 	if float(rate) <= 0:
 		frappe.throw(_("Rate must be positive."))
 	if not (item_name or "").strip():
@@ -69,7 +76,7 @@ def save_laundry_rate(property: str, item_name: str, service_type: str,
 
 
 @frappe.whitelist(methods=["POST"])
-@require_roles(*RATE_ROLES)
+@require_roles(*RATE_ROLES, scope={"name": "Laundry Rate"})
 def delete_laundry_rate(name: str):
 	frappe.delete_doc("Laundry Rate", name)
 	return {"ok": True}
@@ -118,7 +125,7 @@ def import_laundry_rates(property: str, csv_text: str):
 	created = updated = 0
 	issues = []
 	for i, r in enumerate(rows[1:], start=1):
-		get = lambda c: (r[c].strip() if c is not None and c < len(r) else "")  # noqa: E731
+		get = lambda c: (r[c].strip() if c is not None and c < len(r) else "")
 		item = get(c_item)
 		service = SERVICE_ALIASES.get(norm(get(c_service)), get(c_service))
 		rate = re.sub(r"[^0-9.]", "", get(c_rate))
@@ -150,7 +157,8 @@ def _price(property: str, item_name: str, service_type: str,
 		frappe.throw(_("No rate for {0} ({1}) - add it to the rate card "
 		              "first.").format(item_name, service_type))
 	if express:
-		return float(row.express_rate or 0) or round(float(row.rate) * 1.5, 0)
+		return float(row.express_rate or 0) or round(
+			float(row.rate) * express_multiplier(property), 0)
 	return float(row.rate)
 
 
@@ -200,6 +208,8 @@ def request_pickup(property: str, room: str | None = None,
 			"Reservation", {"room": room, "status": "Checked In"}, "name")
 		if not reservation:
 			frappe.throw(_("No checked-in guest in that room."))
+		from kamra.pos import assert_room_charges_allowed
+		assert_room_charges_allowed(reservation)
 	doc = frappe.get_doc({
 		"doctype": "Laundry Order", "property": property,
 		"order_type": order_type, "room": room or None,
@@ -236,6 +246,9 @@ def collect_laundry(property: str, room: str | None = None, items=None,
 				"Reservation", {"room": room, "status": "Checked In"}, "name")
 			if not reservation:
 				frappe.throw(_("No checked-in guest in that room."))
+			if not int(complimentary or 0):
+				from kamra.pos import assert_room_charges_allowed
+				assert_room_charges_allowed(reservation)
 		doc = frappe.get_doc({
 			"doctype": "Laundry Order", "property": property,
 			"order_type": order_type, "room": room or None,
@@ -323,24 +336,26 @@ def deliver_laundry(order: str, shortage_note: str | None = None):
 		detail = ", ".join(
 			f"{int(it.qty)}× {it.item_name} ({it.service_type})"
 			for it in doc.items)
-		me = frappe.session.user
-		frappe.set_user("agent@kamra.local")  # nosemgrep: frappe-setuser -- controlled user context switch; target user is validated and scope-limited in this flow
-		try:
+		# the services tax rate comes from the property's country pack
+		# (18% GST in India, the standard VAT elsewhere), resolved here on
+		# the server - never from the caller
+		from kamra.localization import pack_for, services_tax_rate
+		rate = services_tax_rate(pack_for(doc.property), doc.property)
+		with act_as(AGENT_EMAIL):
 			from kamra.api import post_stay_charge
 			post_stay_charge(
 				doc.reservation, "Laundry",
 				f"Laundry{' (express)' if doc.express else ''}: "
 				f"{detail} ({doc.name})",
-				float(doc.total), gst_rate=LAUNDRY_GST)
+				float(doc.total), gst_rate=rate)
 			posted = True
-		finally:
-			frappe.set_user(me)  # nosemgrep: frappe-setuser -- controlled user context switch; target user is validated and scope-limited in this flow
 	doc.posted_to_folio = 1 if posted else 0
 	doc.save()
 	if posted:
 		from kamra.savings import log_action
+		from kamra.localization import money_text
 		log_action("laundry_bill", "Laundry Order", doc.name, doc.property,
-		           rationale=f"₹{doc.total:,.0f} laundry → {doc.room} "
+		           rationale=f"{money_text(doc.property, doc.total)} laundry → {doc.room} "
 		                     f"({doc.reservation})", channel="API")
 	return {"ok": True, "status": "Delivered", "posted_to_folio": posted,
 	        "total": doc.total}

@@ -14,6 +14,7 @@
   "column_break_a",
   "gst_rate",
   "disabled",
+  "kot_mode",
   "tables"
  ],
  "fields": [
@@ -57,6 +58,14 @@
    "label": "Disabled"
   },
   {
+   "default": "Use F&B setting",
+   "fieldname": "kot_mode",
+   "fieldtype": "Select",
+   "label": "KOT on send",
+   "options": "Use F&B setting\nAuto-accept and print\nKitchen presses Start",
+   "description": "Auto-accept and print: sending an order prints the KOT and shows it on the kitchen display as started. Kitchen presses Start: the pass accepts each ticket and each till chooses whether to print. Use F&B setting follows Settings > F&B."
+  },
+  {
    "fieldname": "tables",
    "fieldtype": "Small Text",
    "label": "Tables",
@@ -66,7 +75,7 @@
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-07-04 21:48:59.457487",
+ "modified": "2026-10-19 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Kamra",
  "name": "POS Outlet",
@@ -118,6 +127,12 @@
    "read": 1,
    "report": 1,
    "role": "Kamra Agent"
+  },
+  {
+   "read": 1,
+   "report": 1,
+   "print": 1,
+   "role": "Night Auditor"
   }
  ],
  "row_format": "Dynamic",

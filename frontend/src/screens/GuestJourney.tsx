@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react"
-import {
+import { Download,
   ArrowLeft,
   Bot,
   CalendarPlus,
@@ -9,16 +9,20 @@ import {
   Mail,
   MapPin,
   Merge,
+  Ban,
   Phone,
+  ShieldCheck,
   ShieldOff,
   Star,
   XCircle,
 } from "lucide-react"
 import { Link, useNavigate, useOutletContext, useParams } from "react-router-dom"
-import { call, guestSearch, type GuestHit } from "../lib/api"
+import { call, guestSearch, setGuestBlacklist, type GuestHit } from "../lib/api"
+import { useAuth } from "../lib/auth"
 import { serverError, updateResource } from "../lib/resource"
 import type { ShellContext } from "../AppShell"
 import EditableNationality from "../components/EditableNationality"
+import GuestDocuments, { GuestAvatar, type GuestDocs } from "../components/GuestDocuments"
 import { Badge } from "../components/ui/badge"
 import { Button } from "../components/ui/button"
 import {
@@ -28,8 +32,8 @@ import {
   CardTitle,
 } from "../components/ui/card"
 import { cn } from "../lib/utils"
-import { toFullPath } from "../lib/routing"
 import { cur, moneyLocale } from "../lib/money"
+import { t as translate, useUILanguage } from "../lib/i18n"
 
 /** Guest profile hub - the person is the center, stays hang off them.
  * Everything the desk needs when a returning guest calls: history at a
@@ -60,6 +64,9 @@ interface Journey {
     nationality: string | null
     id_type: string | null
     id_number: string | null
+    id_place_of_issue: string | null
+    id_issue_date: string | null
+    id_expiry_date: string | null
     blacklisted: 0 | 1
     blacklist_reason: string | null
     address: string
@@ -72,6 +79,7 @@ interface Journey {
     lifetime_value: number
     first_seen: string
   }
+  documents: GuestDocs
   reservations: ResRow[]
   timeline: {
     ts: string
@@ -114,6 +122,7 @@ const stripTone: Record<string, string> = {
 /** Every stay as one block, width ∝ nights - a guest's whole relationship
  * with the hotel readable in half a second. */
 function StayStrip({ rows }: { rows: ResRow[] }) {
+  useUILanguage()
   const ordered = [...rows].sort((a, b) =>
     a.check_in_date.localeCompare(b.check_in_date),
   )
@@ -124,7 +133,7 @@ function StayStrip({ rows }: { rows: ResRow[] }) {
         {ordered.map((r) => (
           <span
             key={r.name}
-            title={`${r.check_in_date} → ${r.check_out_date} · ${r.status} · ${cur()}${inr(r.amount_after_tax)}`}
+            title={`${r.check_in_date} → ${r.check_out_date} · ${translate(r.status)} · ${cur()}${inr(r.amount_after_tax)}`}
             className={cn(
               "rounded-sm",
               stripTone[r.status] ?? "bg-zinc-300",
@@ -135,21 +144,13 @@ function StayStrip({ rows }: { rows: ResRow[] }) {
       </div>
       <div className="mt-1.5 flex gap-3 text-[10px] text-zinc-400">
         <span>
-          <span className="mr-1 inline-block size-2 rounded-sm bg-brand-600 align-middle" />
-          stayed
-        </span>
+          <span className="mr-1 inline-block size-2 rounded-sm bg-brand-600 align-middle" />{translate("stayed")}</span>
         <span>
-          <span className="mr-1 inline-block size-2 rounded-sm bg-emerald-500 align-middle" />
-          in-house
-        </span>
+          <span className="mr-1 inline-block size-2 rounded-sm bg-emerald-500 align-middle" />{translate("in-house")}</span>
         <span>
-          <span className="mr-1 inline-block size-2 rounded-sm bg-sky-400 align-middle" />
-          upcoming
-        </span>
+          <span className="mr-1 inline-block size-2 rounded-sm bg-sky-400 align-middle" />{translate("upcoming")}</span>
         <span>
-          <span className="mr-1 inline-block size-2 rounded-sm bg-rose-300 align-middle" />
-          cancelled
-        </span>
+          <span className="mr-1 inline-block size-2 rounded-sm bg-rose-300 align-middle" />{translate("cancelled")}</span>
       </div>
     </div>
   )
@@ -160,6 +161,7 @@ function MergePanel(props: {
   survivorName: string
   onDone: () => void
 }) {
+  useUILanguage()
   const [q, setQ] = useState("")
   const [hits, setHits] = useState<GuestHit[]>([])
   const [picked, setPicked] = useState<GuestHit | null>(null)
@@ -183,16 +185,13 @@ function MergePanel(props: {
 
   return (
     <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-4">
-      <p className="text-sm font-medium">Merge a duplicate into this profile</p>
-      <p className="mb-2 mt-0.5 text-xs text-zinc-500">
-        The duplicate's stays, bills and tickets move to{" "}
-        <span className="font-medium">{props.survivorName}</span>, then the
-        duplicate is deleted. This can't be undone.
-      </p>
+      <p className="text-sm font-medium">{translate("Merge a duplicate into this profile")}</p>
+      <p className="mb-2 mt-0.5 text-xs text-zinc-500">{translate("The duplicate's stays, bills and tickets move to")}{" "}
+        <span className="font-medium">{props.survivorName}</span>{translate(", then the duplicate is deleted. This can't be undone.")}</p>
       <div className="relative max-w-sm">
         <input
           className="w-full rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-sm focus:outline-2 focus:outline-offset-1 focus:outline-brand-600"
-          placeholder="Find the duplicate by name or phone"
+          placeholder={translate("Find the duplicate by name or phone")}
           value={picked ? picked.full_name : q}
           onChange={(e) => {
             setPicked(null)
@@ -210,7 +209,7 @@ function MergePanel(props: {
                   <span className="font-medium">{h.full_name}</span>
                   <span className="ml-auto text-xs text-zinc-400">
                     {h.phone ? `${h.phone} · ` : ""}
-                    {h.stays} stay{h.stays === 1 ? "" : "s"}
+                    {h.stays}{translate(" stay")}{h.stays === 1 ? "" : translate("s")}
                   </span>
                 </button>
               </li>
@@ -239,32 +238,126 @@ function MergePanel(props: {
           }}
         >
           {busy
-            ? "Merging…"
+            ? translate("Merging…")
             : picked
-              ? `Merge ${picked.full_name} into this profile`
-              : "Merge"}
+              ? translate("Merge {v0} into this profile", { v0: String(picked.full_name) })
+              : translate("Merge")}
         </Button>
-        {error && <span className="text-xs text-rose-600">{error}</span>}
+        {error && <span className="text-xs text-rose-600">{translate(error)}</span>}
+      </div>
+    </div>
+  )
+}
+
+/** Blacklist / lift the blacklist. Hotel Admin only (the endpoint enforces
+ *  it too); a reason is required both ways and goes to the activity log. */
+const BLACKLIST_ROLES = ["Hotel Admin", "System Manager", "Administrator"]
+
+function BlacklistControl(props: {
+  guest: string
+  blacklisted: boolean
+  onDone: () => void
+}) {
+  useUILanguage()
+  const [open, setOpen] = useState(false)
+  const [reason, setReason] = useState("")
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+  const adding = !props.blacklisted
+
+  async function save() {
+    setBusy(true)
+    setErr(null)
+    try {
+      await setGuestBlacklist(props.guest, adding, reason.trim())
+      setOpen(false)
+      setReason("")
+      props.onDone()
+    } catch (e) {
+      setErr(serverError(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  if (!open)
+    return (
+      <div>
+        <Button
+          variant="outline"
+          className={cn(adding && "text-rose-600")}
+          onClick={() => setOpen(true)}
+        >
+          {adding ? (
+            <Ban className="size-4" aria-hidden />
+          ) : (
+            <ShieldCheck className="size-4" aria-hidden />
+          )}
+          {adding ? translate("Blacklist guest") : translate("Remove from blacklist")}
+        </Button>
+        <p className="mt-1.5 text-xs text-zinc-400">
+          {adding
+            ? translate("Blocks new bookings for this guest until a Hotel Admin lifts it.")
+            : translate("New bookings for this guest will be allowed again.")}
+        </p>
+      </div>
+    )
+
+  return (
+    <div className="space-y-2 rounded-lg border border-zinc-200 p-3">
+      <label className="block text-sm font-medium text-zinc-700">
+        {adding ? translate("Why is this guest being blacklisted?") : translate("Why is the blacklist being lifted?")}
+      </label>
+      <textarea
+        className="w-full rounded-lg border border-zinc-300 px-3 py-2 text-sm"
+        rows={2}
+        value={reason}
+        autoFocus
+        onChange={(e) => setReason(e.target.value)}
+        placeholder={translate("Reason (required)")}
+      />
+      {err && <p className="text-sm text-rose-600">{translate(err)}</p>}
+      <div className="flex gap-2">
+        <Button
+          className={cn(adding && "bg-rose-600 hover:bg-rose-700")}
+          disabled={busy || !reason.trim()}
+          onClick={save}
+        >
+          {busy ? translate("Saving…") : adding ? translate("Blacklist") : translate("Remove from blacklist")}
+        </Button>
+        <Button
+          variant="outline"
+          disabled={busy}
+          onClick={() => {
+            setOpen(false)
+            setReason("")
+            setErr(null)
+          }}
+        >{translate("Cancel")}</Button>
       </div>
     </div>
   )
 }
 
 function StatCell(props: { label: string; value: string }) {
+  useUILanguage()
   return (
     <div>
       <div className="text-lg font-semibold leading-tight">{props.value}</div>
       <div className="text-[10px] font-medium uppercase tracking-widest text-zinc-400">
-        {props.label}
+        {translate(props.label)}
       </div>
     </div>
   )
 }
 
 export default function GuestJourney() {
+  useUILanguage()
   const { name } = useParams()
   const navigate = useNavigate()
-  const { openBooking } = useOutletContext<ShellContext>()
+  const { canBook, openBooking } = useOutletContext<ShellContext>()
+  const { roles } = useAuth()
+  const canBlacklist = BLACKLIST_ROLES.some((r) => roles.includes(r))
   const [data, setData] = useState<Journey | null>(null)
   const [merging, setMerging] = useState(false)
   const [confirmAnon, setConfirmAnon] = useState(false)
@@ -282,7 +375,7 @@ export default function GuestJourney() {
   useEffect(load, [load])
 
   if (!data || notes === null) {
-    return <p className="py-10 text-center text-sm text-zinc-400">Loading…</p>
+    return <p className="py-10 text-center text-sm text-zinc-400">{translate("Loading…")}</p>
   }
 
   const { guest, stats, timeline, reservations } = data
@@ -308,28 +401,24 @@ export default function GuestJourney() {
         to="/guests"
         className="mb-4 inline-flex items-center gap-1 text-sm text-zinc-500 hover:text-zinc-800"
       >
-        <ArrowLeft className="size-4" aria-hidden />
-        All guests
-      </Link>
+        <ArrowLeft className="size-4" aria-hidden />{translate("All guests")}</Link>
 
       {/* identity card */}
       <Card className="mb-4">
         <CardContent className="py-5">
           <div className="flex flex-wrap items-start gap-4">
-            <div className="flex size-14 items-center justify-center rounded-2xl bg-brand-50 text-xl font-semibold text-brand-700">
-              {guest.full_name?.slice(0, 1) ?? "G"}
-            </div>
+            <GuestAvatar guestId={guest.name} has={!!data.documents?.photo} initial={guest.full_name?.slice(0, 1) ?? "G"} />
             <div className="min-w-0 flex-1">
               <h1 className="flex flex-wrap items-center gap-2 text-xl font-semibold">
                 {guest.full_name}
                 {Boolean(guest.vip) && (
                   <Star
                     className="size-4 fill-amber-400 text-amber-400"
-                    aria-label="VIP"
+                    aria-label={translate("VIP")}
                   />
                 )}
                 {Boolean(guest.blacklisted) && (
-                  <Badge tone="rose">Blacklisted</Badge>
+                  <Badge tone="rose">{translate("Blacklisted")}</Badge>
                 )}
               </h1>
               <p className="mt-0.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-zinc-500">
@@ -363,29 +452,29 @@ export default function GuestJourney() {
               </div>
             </div>
             <div className="flex flex-col items-end gap-3">
-              <div className="flex gap-2">
-                <Button
-                  onClick={() =>
-                    openBooking({
-                      guest: guest.name,
-                      guest_name: guest.full_name,
-                      phone: guest.phone ?? undefined,
-                      stays: stats.stays,
-                    })
-                  }
-                >
-                  <CalendarPlus className="size-4" aria-hidden />
-                  Book a stay
-                </Button>
-              </div>
+              {canBook && (
+                <div className="flex gap-2">
+                  <Button
+                    onClick={() =>
+                      openBooking({
+                        guest: guest.name,
+                        guest_name: guest.full_name,
+                        phone: guest.phone ?? undefined,
+                        stays: stats.stays,
+                      })
+                    }
+                  >
+                    <CalendarPlus className="size-4" aria-hidden />{translate("Book a stay")}</Button>
+                </div>
+              )}
               <div className="flex gap-6 text-right">
-                <StatCell label="Stays" value={String(stats.stays)} />
-                <StatCell label="Nights" value={String(stats.nights)} />
+                <StatCell label={translate("Stays")} value={String(stats.stays)} />
+                <StatCell label={translate("Nights")} value={String(stats.nights)} />
                 <StatCell
-                  label="Lifetime"
+                  label={translate("Lifetime")}
                   value={`${cur()}${inr(stats.lifetime_value)}`}
                 />
-                <StatCell label="Per night" value={`${cur()}${inr(avgNight)}`} />
+                <StatCell label={translate("Per night")} value={`${cur()}${inr(avgNight)}`} />
               </div>
             </div>
           </div>
@@ -400,9 +489,7 @@ export default function GuestJourney() {
       {upcoming.length > 0 && (
         <Card className="mb-4 border-sky-200">
           <CardContent className="py-4">
-            <h2 className="mb-2 text-xs font-semibold uppercase tracking-wider text-sky-800">
-              Upcoming
-            </h2>
+            <h2 className="mb-2 text-xs font-semibold uppercase tracking-wider text-sky-800">{translate("Upcoming")}</h2>
             <ul className="divide-y divide-zinc-100">
               {upcoming.map((r) => (
                 <li
@@ -414,18 +501,16 @@ export default function GuestJourney() {
                   </span>
                   <span className="text-zinc-500">
                     {r.room_type?.split("-").pop()}
-                    {r.room ? ` · Room ${r.room.split("-").pop()}` : ""} ·{" "}
-                    {r.nights} night{r.nights === 1 ? "" : "s"}
+                    {r.room ? translate(" · Room {v0}", { v0: String(r.room.split("-").pop()) }) : ""} ·{" "}
+                    {r.nights}{translate(" night")}{r.nights === 1 ? "" : translate("s")}
                   </span>
                   {r.company && <Badge tone="zinc">{r.company}</Badge>}
                   <span className="ml-auto flex items-center gap-3">
                     <span>{cur()}{inr(r.amount_after_tax)}</span>
-                    <a
-                      href={toFullPath(`/grc/${encodeURIComponent(r.name)}`)}
+                    <Link
+                      to={`/grc/${encodeURIComponent(r.name)}`}
                       className="font-medium text-brand-700 hover:underline"
-                    >
-                      GRC
-                    </a>
+                    >{translate("GRC")}</Link>
                   </span>
                 </li>
               ))}
@@ -437,16 +522,13 @@ export default function GuestJourney() {
       <div className="grid gap-4 lg:grid-cols-3">
         <Card className="lg:col-span-2">
           <CardHeader>
-            <CardTitle>Journey</CardTitle>
+            <CardTitle>{translate("Journey")}</CardTitle>
             <span className="text-xs text-zinc-400">
-              {timeline.length} events · newest first
-            </span>
+              {timeline.length}{translate(" events · newest first")}</span>
           </CardHeader>
           <CardContent>
             {timeline.length === 0 ? (
-              <p className="py-4 text-sm text-zinc-400">
-                No activity yet - their story starts with the first booking.
-              </p>
+              <p className="py-4 text-sm text-zinc-400">{translate("No activity yet - their story starts with the first booking.")}</p>
             ) : (
               <ol className="relative ml-3 space-y-5 border-l border-zinc-200 pb-1">
                 {timeline.map((e, i) => {
@@ -466,12 +548,12 @@ export default function GuestJourney() {
                           <Link
                             to={`/reservations?q=${encodeURIComponent(e.reference)}`}
                             className="text-sm font-medium text-brand-700 hover:underline"
-                            title={`Open ${e.reference}`}
+                            title={translate("Open {v0}", { v0: String(e.reference) })}
                           >
-                            {e.title}
+                            {translate(e.title)}
                           </Link>
                         ) : (
-                          <span className="text-sm font-medium">{e.title}</span>
+                          <span className="text-sm font-medium">{translate(e.title)}</span>
                         )}
                         {e.amount ? (
                           <span className="text-sm text-zinc-500">
@@ -497,15 +579,17 @@ export default function GuestJourney() {
         </Card>
 
         <div className="space-y-4">
+          {/* key on the saved values so the form resets after a save */}
+          <GuestDocuments
+            key={`${guest.id_type}|${guest.id_number}|${guest.id_place_of_issue}|${guest.id_issue_date}|${guest.id_expiry_date}`}
+            guestId={guest.name} docs={data.documents} onSaved={load} />
           <Card>
             <CardHeader>
-              <CardTitle>Notes & preferences</CardTitle>
+              <CardTitle>{translate("Notes & preferences")}</CardTitle>
             </CardHeader>
             <CardContent>
               <label className="mb-3 block text-sm">
-                <span className="mb-1 block text-xs font-medium uppercase tracking-wider text-zinc-400">
-                  Nationality
-                </span>
+                <span className="mb-1 block text-xs font-medium uppercase tracking-wider text-zinc-400">{translate("Nationality")}</span>
                 <EditableNationality
                   guestId={guest.name}
                   value={guest.nationality}
@@ -518,7 +602,7 @@ export default function GuestJourney() {
               </label>
               <textarea
                 className="min-h-24 w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm focus:outline-2 focus:outline-offset-1 focus:outline-brand-600"
-                placeholder="Allergies, room preferences, how they take their chai…"
+                placeholder={translate("Allergies, room preferences, how they take their chai…")}
                 value={notes}
                 onChange={(e) => setNotes(e.target.value)}
               />
@@ -527,9 +611,7 @@ export default function GuestJourney() {
                   variant="outline"
                   disabled={busy || notes === (guest.notes ?? "")}
                   onClick={() => saveField({ guest_notes: notes })}
-                >
-                  Save notes
-                </Button>
+                >{translate("Save notes")}</Button>
                 <label className="flex items-center gap-1.5 text-sm text-zinc-600">
                   <input
                     type="checkbox"
@@ -539,18 +621,23 @@ export default function GuestJourney() {
                     onChange={(e) =>
                       saveField({ vip: e.target.checked ? 1 : 0 })
                     }
-                  />
-                  VIP
-                </label>
+                  />{translate("VIP")}</label>
               </div>
             </CardContent>
           </Card>
 
           <Card>
             <CardHeader>
-              <CardTitle>Profile actions</CardTitle>
+              <CardTitle>{translate("Profile actions")}</CardTitle>
             </CardHeader>
             <CardContent className="space-y-3">
+              {canBlacklist && (
+                <BlacklistControl
+                  guest={guest.name}
+                  blacklisted={Boolean(guest.blacklisted)}
+                  onDone={load}
+                />
+              )}
               {merging ? (
                 <MergePanel
                   survivor={guest.name}
@@ -562,9 +649,7 @@ export default function GuestJourney() {
                 />
               ) : (
                 <Button variant="outline" onClick={() => setMerging(true)}>
-                  <Merge className="size-4" aria-hidden />
-                  Merge a duplicate
-                </Button>
+                  <Merge className="size-4" aria-hidden />{translate("Merge a duplicate")}</Button>
               )}
               <div>
                 <Button
@@ -591,13 +676,34 @@ export default function GuestJourney() {
                 >
                   <ShieldOff className="size-4" aria-hidden />
                   {confirmAnon
-                    ? "Confirm - erase identity forever"
-                    : "Anonymize profile"}
+                    ? translate("Confirm - erase identity forever")
+                    : translate("Anonymize profile")}
                 </Button>
-                <p className="mt-1.5 text-xs text-zinc-400">
-                  Erases name, contact and ID everywhere; stays and bills stay
-                  on the books. For data-erasure requests.
-                </p>
+                <p className="mt-1.5 text-xs text-zinc-400">{translate("Erases name, contact, ID photos, signatures, messages and change history; stays and bills stay on the books. For data-erasure requests.")}</p>
+              </div>
+              <div>
+                <Button
+                  variant="outline"
+                  disabled={busy}
+                  onClick={async () => {
+                    setBusy(true)
+                    try {
+                      const data = await call<Record<string, unknown>>(
+                        "kamra.privacy.export_guest_data", { guest: guest.name })
+                      const url = URL.createObjectURL(
+                        new Blob([JSON.stringify(data, null, 2)], { type: "application/json" }))
+                      const a = document.createElement("a")
+                      a.href = url
+                      a.download = `guest-data-${guest.name}.json`
+                      a.click()
+                      URL.revokeObjectURL(url)
+                    } finally {
+                      setBusy(false)
+                    }
+                  }}
+                >
+                  <Download className="size-4" aria-hidden />{translate("Export guest data")}</Button>
+                <p className="mt-1.5 text-xs text-zinc-400">{translate("Everything held about this guest, for a data-access request.")}</p>
               </div>
             </CardContent>
           </Card>

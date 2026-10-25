@@ -1,9 +1,15 @@
 import type { ScreenConfig } from "../components/ResourceScreen"
-import BillingRulesEditor from "../components/BillingRulesEditor"
-import EventLinks from "../components/EventLinks"
-import GroupControl from "../components/GroupControl"
-import RoomTypeMedia from "../components/RoomTypeMedia"
-import ReservationDetail from "./ReservationDetail"
+import { lazy } from "react"
+
+// Drawer panels load when a row is opened, not with the app shell
+const CompanyExtras = lazy(() => import("../components/CompanyExtras"))
+const EventLinks = lazy(() => import("../components/EventLinks"))
+const GroupControl = lazy(() => import("../components/GroupControl"))
+const RoomTypeMedia = lazy(() => import("../components/RoomTypeMedia"))
+const HkTaskMediaPanel = lazy(() =>
+  import("../components/HkMedia").then((m) => ({ default: m.HkTaskMediaPanel })),
+)
+const ReservationDetail = lazy(() => import("./ReservationDetail"))
 import { cur } from "../lib/money"
 
 export const roomsConfig: ScreenConfig = {
@@ -11,7 +17,7 @@ export const roomsConfig: ScreenConfig = {
   title: "Rooms",
   description: "Physical rooms - number, type, floor and live status.",
   searchFields: ["room_number", "name"],
-  filters: [{ field: "housekeeping_status", label: "Status", options: ["Clean", "Dirty", "Inspected", "Out of Order"] }],
+  filters: [{ field: "housekeeping_status", label: "Status", options: ["Clean", "Dirty", "Inspected", "Ready", "Out of Order"] }],
   pageSize: 25,
   propertyScoped: true,
   orderBy: "room_number asc",
@@ -55,6 +61,12 @@ export const roomTypesConfig: ScreenConfig = {
     { field: "base_occupancy", label: "Adults included in base price", type: "int" },
     { field: "single_occupancy_price", label: "Single occupancy price", type: "currency", dependsOn: (d) => d.room_category !== "Villa" },
     { field: "extra_adult_price", label: "Extra adult / night", type: "currency" },
+    { field: "small_group_max_adults", label: "Small-group threshold (adults)", type: "int", hint: "Below this many adults, price per person instead of the house rate. Blank or 0 = off" },
+    { field: "small_group_price_per_adult", label: "Small-group price / adult", type: "currency", dependsOn: (d) => Number(d.small_group_max_adults) > 0 },
+    { field: "small_group_days", label: "Small-group days (e.g. sun, mon, tue, wed, thu)", type: "data", hint: "Blank = every day", dependsOn: (d) => Number(d.small_group_max_adults) > 0 },
+    { field: "small_group_whole_stay", label: "Small-group rate needs the whole stay", type: "check", hint: "A stay touching a non-small-group day is charged at the house rate throughout", dependsOn: (d) => Number(d.small_group_max_adults) > 0 },
+    { field: "children_within_base_occupancy", label: "Children count towards base occupancy", type: "check", hint: "Only guests beyond the base occupancy are charged, children included" },
+    { field: "max_extra_beds", label: "Guests allowed above capacity", type: "int", hint: "Only for a single unit with no second room to split into. 0 = never over capacity; the price is agreed on each booking" },
     { field: "child_price", label: "Child / night", type: "currency" },
     { field: "adults_capacity", label: "Max adults", type: "int" },
     { field: "children_capacity", label: "Max children", type: "int" },
@@ -77,8 +89,9 @@ export const roomTypesConfig: ScreenConfig = {
 export const ratePlansConfig: ScreenConfig = {
   doctype: "Rate Plan",
   title: "Rate Plans",
-  description: "Sellable plans (BAR, non-refundable, corporate) that adjust the room total.",
-  searchFields: ["plan_name"],
+  description:
+    "Sellable plans (BAR, non-refundable, corporate). Clear Disabled to publish a plan at booking; tick it to unpublish.",
+  searchFields: ["rate_plan_name", "code"],
   pageSize: 25,
   propertyScoped: true,
   columns: [
@@ -87,6 +100,7 @@ export const ratePlansConfig: ScreenConfig = {
     { field: "modifier_type", label: "Modifier" },
     { field: "modifier_value", label: "Value" },
     { field: "is_default", label: "Default" },
+    { field: "disabled", label: "Status", statusCheck: true },
   ],
   form: [
     { field: "rate_plan_name", label: "Name", type: "data", required: true },
@@ -95,14 +109,15 @@ export const ratePlansConfig: ScreenConfig = {
     { field: "modifier_value", label: "Modifier value (-10 = 10% off)", type: "float" },
     { field: "cancellation_policy", label: "Cancellation policy", type: "data" },
     { field: "is_default", label: "Default plan", type: "check" },
-    { field: "disabled", label: "Disabled", type: "check" },
+    { field: "disabled", label: "Disabled (unpublished)", type: "check", hint: "Tick to unpublish; clear to activate at booking" },
   ],
 }
 
 export const seasonsConfig: ScreenConfig = {
   doctype: "Season",
   title: "Seasons",
-  description: "Date ranges that lift or set nightly rates. Highest priority wins.",
+  description:
+    "Date ranges that lift or set nightly rates. Highest priority wins. Toggle Disabled to activate or pause a season.",
   propertyScoped: true,
   orderBy: "start_date asc",
   columns: [
@@ -113,6 +128,7 @@ export const seasonsConfig: ScreenConfig = {
     { field: "adjustment_value", label: "Value" },
     { field: "days_of_week", label: "Days" },
     { field: "priority", label: "Priority" },
+    { field: "disabled", label: "Status", statusCheck: true },
   ],
   form: [
     { field: "season_name", label: "Name", type: "data", required: true },
@@ -123,15 +139,21 @@ export const seasonsConfig: ScreenConfig = {
     { field: "adjustment_value", label: "Value (20 = +20%)", type: "float" },
     { field: "days_of_week", label: "Days of week (e.g. fri, sat)", type: "data" },
     { field: "priority", label: "Priority", type: "int" },
-    { field: "disabled", label: "Disabled", type: "check" },
+    { field: "minimum_nights", label: "Minimum nights", type: "int", hint: "Shortest stay allowed on these dates. 0 = no minimum" },
+    { field: "non_refundable", label: "Non-refundable", type: "check", hint: "A stay touching these dates cannot be cancelled free of charge" },
+    { field: "full_payment", label: "Full payment on booking", type: "check", hint: "Online bookings on these dates pay the whole amount, not the usual advance" },
+    { field: "no_small_group", label: "No small-group rate", type: "check", hint: "Small parties pay the house rate on these dates, as on a weekend" },
+    { field: "is_holiday", label: "Holiday / long weekend", type: "check", hint: "Quotes say these are holiday dates" },
+    { field: "disabled", label: "Disabled", type: "check", hint: "Tick to deactivate; clear to activate" },
   ],
 }
 
 export const vouchersConfig: ScreenConfig = {
   doctype: "Discount Voucher",
   title: "Vouchers",
-  description: "Discount codes guests or agents can apply at booking.",
-  searchFields: ["code"],
+  description:
+    "Discount codes guests or agents can apply at booking. Toggle Disabled to activate or deactivate a code.",
+  searchFields: ["voucher_code"],
   pageSize: 25,
   propertyScoped: true,
   columns: [
@@ -141,6 +163,8 @@ export const vouchersConfig: ScreenConfig = {
     { field: "valid_to", label: "Valid until" },
     { field: "min_nights", label: "Min nights" },
     { field: "times_used", label: "Used" },
+    { field: "max_uses", label: "Max uses" },
+    { field: "disabled", label: "Status", statusCheck: true },
   ],
   form: [
     { field: "voucher_code", label: "Code", type: "data", required: true },
@@ -151,7 +175,7 @@ export const vouchersConfig: ScreenConfig = {
     { field: "min_nights", label: "Minimum nights", type: "int" },
     { field: "max_uses", label: "Max uses (0 = unlimited)", type: "int" },
     { field: "times_used", label: "Times used", type: "readonly" },
-    { field: "disabled", label: "Disabled", type: "check" },
+    { field: "disabled", label: "Disabled", type: "check", hint: "Tick to deactivate; clear to activate" },
   ],
 }
 
@@ -173,6 +197,38 @@ export const mealPlansConfig: ScreenConfig = {
     { field: "price_per_adult", label: "Price per adult / night", type: "currency" },
     { field: "price_per_child", label: "Price per child / night", type: "currency" },
     { field: "is_default", label: "Default", type: "check" },
+    { field: "disabled", label: "Disabled", type: "check" },
+  ],
+}
+
+export const experiencesConfig: ScreenConfig = {
+  doctype: "Experience",
+  title: "Experiences",
+  description:
+    "Add-ons sold with a stay - spa, tours, dinners, transfers. Ticked ones show on /book.",
+  searchFields: ["experience_name"],
+  filters: [
+    { field: "category", label: "Category", options: ["Spa", "Tour", "Dining", "Activity", "Transport", "Other"] },
+  ],
+  pageSize: 25,
+  propertyScoped: true,
+  orderBy: "experience_name asc",
+  columns: [
+    { field: "experience_name", label: "Experience" },
+    { field: "category", label: "Category", badge: true },
+    { field: "price", label: `Price ${cur()}` },
+    { field: "duration", label: "Duration" },
+    { field: "show_on_booking_page", label: "On booking page" },
+  ],
+  form: [
+    { field: "experience_name", label: "Name", type: "data", required: true },
+    { field: "category", label: "Category", type: "select", options: ["Spa", "Tour", "Dining", "Activity", "Transport", "Other"] },
+    { field: "price", label: "Price", type: "currency" },
+    { field: "gst_rate", label: "Tax %", type: "float" },
+    { field: "duration", label: "Duration (e.g. 90 min, half day)", type: "data" },
+    { field: "description", label: "Description (shown to guests)", type: "data" },
+    { field: "image_url", label: "Photo", type: "image" },
+    { field: "show_on_booking_page", label: "Show on the public booking page", type: "check" },
     { field: "disabled", label: "Disabled", type: "check" },
   ],
 }
@@ -351,7 +407,7 @@ export const venueBookingsConfig: ScreenConfig = {
     { field: "customer_name", label: "Customer name", type: "data", required: true },
     { field: "customer_phone", label: "Customer phone", type: "data" },
     { field: "customer_email", label: "Customer email", type: "data" },
-    { field: "company", label: "Company", type: "link", linkDoctype: "Company" },
+    { field: "company", label: "Company", type: "link", linkDoctype: "Corporate Account" },
     { field: "attendees", label: "Expected pax", type: "int" },
     { field: "pax_guaranteed", label: "Guaranteed pax", type: "int" },
     { field: "status", label: "Status", type: "select", options: FUNCTION_STATUSES },
@@ -411,7 +467,7 @@ export const shiftsConfig: ScreenConfig = {
   ],
   form: [
     { field: "shift", label: "Shift", type: "select", options: ["Morning", "Evening", "Night"], required: true },
-    { field: "shift_date", label: "Date", type: "date", required: true },
+    { field: "shift_date", label: "Date", type: "date", required: true, notPast: true },
     { field: "opening_cash", label: "Opening cash", type: "currency" },
     { field: "cash_collected", label: "Cash collected", type: "currency" },
     { field: "payouts", label: "Payouts", type: "currency" },
@@ -426,24 +482,27 @@ export const guardrailsConfig: ScreenConfig = {
   doctype: "Rate Guardrail",
   title: "Rate Guardrails",
   description:
-    "Owner-set floor and ceiling. No rate move - human or AI agent - can price outside these rails.",
+    "Owner-set floor and ceiling. No rate move - human or AI agent - can price outside these rails. Toggle Disabled to activate or pause a rail.",
   propertyScoped: true,
   columns: [
     { field: "name", label: "Rail" },
     { field: "room_type", label: "Room type (blank = all)" },
     { field: "floor_price", label: `Floor ${cur()}` },
     { field: "ceiling_price", label: `Ceiling ${cur()}` },
+    { field: "days_of_week", label: "Days" },
+    { field: "disabled", label: "Status", statusCheck: true },
   ],
   form: [
     { field: "room_type", label: "Room type (blank = all)", type: "link", linkDoctype: "Room Type" },
     { field: "floor_price", label: "Floor price / night", type: "currency", required: true },
     { field: "ceiling_price", label: "Ceiling price / night", type: "currency", required: true },
-    { field: "disabled", label: "Disabled", type: "check" },
+    { field: "days_of_week", label: "Days of week (e.g. fri, sat)", type: "data", hint: "Blank = every day. Lets a weekend floor sit above the midweek one" },
+    { field: "disabled", label: "Disabled", type: "check", hint: "Tick to deactivate; clear to activate" },
   ],
 }
 
 export const companiesConfig: ScreenConfig = {
-  doctype: "Company",
+  doctype: "Corporate Account",
   title: "Corporate Accounts",
   description: "Companies with negotiated rates and credit terms.",
   searchFields: ["company_name", "gstin"],
@@ -465,7 +524,7 @@ export const companiesConfig: ScreenConfig = {
     { field: "credit_allowed", label: "Credit allowed (city ledger)", type: "check" },
     { field: "disabled", label: "Disabled", type: "check" },
   ],
-  extra: BillingRulesEditor,
+  extra: CompanyExtras,
 }
 
 export const housekeepingConfig: ScreenConfig = {
@@ -473,7 +532,7 @@ export const housekeepingConfig: ScreenConfig = {
   title: "Housekeeping Tasks",
   description: "Cleans and inspections. Completing a task updates the room's live status.",
   searchFields: ["room"],
-  filters: [{ field: "status", label: "Status", options: ["Open", "In Progress", "Done"] }],
+  filters: [{ field: "status", label: "Status", options: ["Pending", "In Progress", "Done", "Verified"] }],
   pageSize: 25,
   propertyScoped: true,
   orderBy: "creation desc",
@@ -485,40 +544,13 @@ export const housekeepingConfig: ScreenConfig = {
     { field: "status", label: "Status", badge: true },
   ],
   form: [
-    { field: "room", label: "Room", type: "link", linkDoctype: "Room", required: true },
+    { field: "room", label: "Room", type: "link", linkDoctype: "Room", linkPropertyScoped: true, required: true },
     { field: "task_type", label: "Type", type: "select", options: ["Checkout Clean", "Stayover Clean", "Deep Clean", "Inspection", "Maintenance"] },
     { field: "priority", label: "Priority", type: "select", options: ["Low", "Medium", "High", "Urgent"] },
     { field: "status", label: "Status", type: "select", options: ["Pending", "In Progress", "Done", "Verified"] },
     { field: "notes", label: "Notes", type: "data" },
   ],
-}
-
-export const billingConfig: ScreenConfig = {
-  doctype: "Reservation",
-  dateFilter: { field: "check_in_date", label: "Check-in" },
-  title: "Billing",
-  description:
-    "Reservation totals. Folios, charge posting and GST invoices arrive in the next milestone.",
-  propertyScoped: true,
-  allowCreate: false,
-  allowDelete: false,
-  orderBy: "check_in_date desc",
-  columns: [
-    { field: "name", label: "Reservation" },
-    { field: "guest_name", label: "Guest" },
-    { field: "status", label: "Status", badge: true },
-    { field: "check_in_date", label: "Check-in" },
-    { field: "amount_before_tax", label: `Pre-tax ${cur()}` },
-    { field: "discount_amount", label: `Discount ${cur()}` },
-    { field: "tax_amount", label: `GST ${cur()}` },
-    { field: "amount_after_tax", label: `Total ${cur()}` },
-  ],
-  form: [
-    { field: "guest_name", label: "Guest", type: "readonly" },
-    { field: "amount_before_tax", label: "Pre-tax", type: "readonly" },
-    { field: "tax_amount", label: "GST", type: "readonly" },
-    { field: "amount_after_tax", label: "Total", type: "readonly" },
-  ],
+  extra: HkTaskMediaPanel,
 }
 
 export const reservationsConfig: ScreenConfig = {
@@ -535,6 +567,9 @@ export const reservationsConfig: ScreenConfig = {
       field: "status",
       label: "Status",
       options: [
+        "Requested",
+        "Held",
+        "Pending Payment",
         "Waitlist",
         "Confirmed",
         "Checked In",
@@ -587,7 +622,7 @@ export const groupsConfig: ScreenConfig = {
   ],
   form: [
     { field: "group_name", label: "Group name", type: "data", required: true },
-    { field: "company", label: "Company", type: "link", linkDoctype: "Company" },
+    { field: "company", label: "Company", type: "link", linkDoctype: "Corporate Account" },
     { field: "check_in_date", label: "Arrival", type: "date", required: true },
     { field: "check_out_date", label: "Departure", type: "date", required: true },
     { field: "cutoff_date", label: "Block cutoff", type: "date" },
@@ -612,13 +647,56 @@ export const outletsConfig: ScreenConfig = {
     { field: "outlet_type", label: "Type", type: "select", options: ["Restaurant", "Room Service", "Bar", "Spa", "Other"] },
     { field: "gst_rate", label: "GST %", type: "float" },
     { field: "disabled", label: "Disabled", type: "check" },
+    {
+      field: "kot_mode",
+      label: "KOT on send",
+      type: "select",
+      options: ["Use F&B setting", "Auto-accept and print", "Kitchen presses Start"],
+      hint: "Auto-accept and print: sending an order prints the KOT and shows it on the kitchen display as started. Kitchen presses Start: the pass accepts each ticket. Use F&B setting follows Settings > F&B.",
+    },
+  ],
+}
+
+export const ingredientsConfig: ScreenConfig = {
+  doctype: "Ingredient",
+  title: "Ingredients",
+  description:
+    "The kitchen store cupboard - name, unit, category and cost. Stock movements live under Kitchen Inventory; recipes under Menu → Recipes.",
+  searchFields: ["ingredient_name", "category"],
+  filters: [
+    { field: "is_active", label: "Active", options: ["1", "0"] },
+  ],
+  pageSize: 50,
+  propertyScoped: true,
+  orderBy: "category, ingredient_name",
+  columns: [
+    { field: "ingredient_name", label: "Ingredient" },
+    { field: "category", label: "Category" },
+    { field: "uom", label: "Unit", badge: true },
+    { field: "cost_per_unit", label: `Cost / unit` },
+    { field: "is_active", label: "Active", badge: true },
+  ],
+  form: [
+    { field: "ingredient_name", label: "Ingredient", type: "data", required: true },
+    { field: "category", label: "Category", type: "data",
+      hint: "Produce, Dairy, Dry Goods, Bar - free text" },
+    { field: "uom", label: "Unit", type: "select", required: true,
+      options: ["kg", "g", "L", "ml", "pc", "bottle", "packet"],
+      hint: "One unit only. Recipes and purchases both use it - buy and cook in the same unit (e.g. define in g if you cook in g)." },
+    { field: "cost_per_unit", label: "Cost / unit", type: "currency",
+      hint: "Last known cost, used to value wastage. Indicative only - not FIFO and not on the books." },
+    { field: "gst_rate", label: "Input GST %", type: "float",
+      hint: "Tax paid when buying this." },
+    { field: "is_active", label: "Active", type: "check",
+      hint: "Turn off instead of deleting when a recipe or stock history uses it." },
   ],
 }
 
 export const menuItemsConfig: ScreenConfig = {
   doctype: "Menu Item",
   title: "Menu",
-  description: "Dishes and drinks across your outlets - photo, price, veg/non-veg.",
+  description:
+    "Dishes and drinks across your outlets - photo, price, veg/non-veg. Allergens, stations and courses are edited under Settings → F&B → Menu master lists.",
   searchFields: ["item_name", "category"],
   pageSize: 50,
   propertyScoped: true,
@@ -633,14 +711,26 @@ export const menuItemsConfig: ScreenConfig = {
   form: [
     { field: "outlet", label: "Outlet", type: "link", linkDoctype: "POS Outlet", required: true },
     { field: "item_name", label: "Item name", type: "data", required: true },
-    { field: "category", label: "Category", type: "data" },
+    { field: "category", label: "Category", type: "data", optionsFrom: "categories",
+      hint: "Pick a suggestion or type a new one" },
     { field: "price", label: "Price", type: "currency", required: true },
     { field: "image", label: "Photo", type: "image",
-      hint: "800×600px landscape JPG/WebP, under 500 KB — shows on the POS card and the guest QR menu" },
+      hint: "800x600px landscape JPG/WebP, under 500 KB - shows on the POS card" },
     { field: "description", label: "Description", type: "data" },
-    { field: "prep_station", label: "Prep station", type: "select", options: ["Kitchen", "Bar"] },
+    { field: "course", label: "Course", type: "select", optionsFrom: "courses",
+      options: ["Starter", "Main", "Dessert", "Drink"],
+      hint: "When it is served - kitchen holds later courses until the table is ready" },
+    { field: "prep_station", label: "Prep station", type: "select",
+      optionsFrom: "prep_stations",
+      options: ["Kitchen", "Tandoor", "Grill", "Fryer", "Bar"],
+      hint: "Which KOT this item prints to" },
+    { field: "allergens", label: "Allergens & dietary tags", type: "tags",
+      optionsFrom: "allergens",
+      options: ["Egg", "Dairy", "Nuts", "Peanuts", "Gluten", "Soy", "Shellfish", "Fish", "Sesame", "Sulphites"],
+      hint: "Edit the list under Settings → F&B → Menu master lists. Matched against the guest allergy note on the kitchen display." },
     { field: "is_veg", label: "Vegetarian", type: "check" },
-    { field: "is_alcohol", label: "Alcohol", type: "check" },
+    { field: "is_alcohol", label: "Alcohol", type: "check",
+      hint: "Alcohol always bills the guest folio, never the company" },
     { field: "available", label: "Available", type: "check" },
   ],
 }
@@ -671,6 +761,7 @@ export const channelConnectionsConfig: ScreenConfig = {
     { field: "external_account_id", label: "Meta phone number ID", type: "data", hint: "From Meta Business Manager > WhatsApp > API setup" },
     { field: "credentials", label: "Access token", type: "data", hint: "Permanent Cloud API token - stored encrypted" },
     { field: "webhook_secret", label: "Webhook verify token", type: "data", hint: "Any string; use the same one in Meta's webhook setup" },
+    { field: "app_secret", label: "Meta App Secret", type: "data", hint: "App settings > Basic. Required: inbound messages are signature-checked with it - stored encrypted" },
     { field: "meta_language", label: "Template language code", type: "data" },
     { field: "tpl_booking_confirmation", label: "Template: booking confirmation", type: "data", hint: "Args: guest, property, check-in, check-out" },
     { field: "tpl_precheckin", label: "Template: self check-in link", type: "data", hint: "Args: guest, link" },
@@ -725,9 +816,89 @@ export const channelRoomMappingsConfig: ScreenConfig = {
     { field: "external_rate_id", label: "Provider rate ID" },
   ],
   form: [
-    { field: "connection", label: "Connection", type: "link", linkDoctype: "Channel Manager Connection", required: true },
-    { field: "room_type", label: "Room type", type: "link", linkDoctype: "Room Type", required: true },
+    { field: "connection", label: "Connection", type: "link", linkDoctype: "Channel Manager Connection", linkPropertyScoped: true, required: true },
+    { field: "room_type", label: "Room type", type: "link", linkDoctype: "Room Type", linkPropertyScoped: true, required: true },
     { field: "external_room_id", label: "Provider room ID", type: "data", required: true },
     { field: "external_rate_id", label: "Provider rate plan ID", type: "data" },
+  ],
+}
+
+export const reasonCodesConfig: ScreenConfig = {
+  doctype: "Reason Code",
+  title: "Reason Codes",
+  description:
+    "Coded reasons for voids, adjustments, refunds and paid-outs. Prefer these over free text so Voids & Allowances and audits stay consistent. Defaults are seeded; disable instead of deleting codes already on the books.",
+  searchFields: ["code", "description"],
+  filters: [
+    { field: "category", label: "Category",
+      options: ["Void", "Adjust", "Rate Change", "Refund", "Paid Out", "NC"] },
+    { field: "disabled", label: "Disabled", options: ["0", "1"] },
+  ],
+  pageSize: 50,
+  orderBy: "category, code",
+  columns: [
+    { field: "code", label: "Code" },
+    { field: "description", label: "Description" },
+    { field: "category", label: "Category", badge: true },
+    { field: "requires_supervisor", label: "Supervisor", badge: true },
+    { field: "disabled", label: "Status", statusCheck: true },
+  ],
+  form: [
+    { field: "code", label: "Code", type: "data", required: true,
+      hint: "Short stable id (e.g. VOID-GUEST). Becomes the document name - do not rename after use." },
+    { field: "description", label: "Description", type: "data", required: true },
+    { field: "category", label: "Category", type: "select", required: true,
+      options: ["Void", "Adjust", "Rate Change", "Refund", "Paid Out", "NC"] },
+    { field: "requires_supervisor", label: "Requires supervisor", type: "check",
+      hint: "Only Finance / Hotel Admin may use this code when ticked." },
+    { field: "disabled", label: "Disabled", type: "check",
+      hint: "Turn off instead of deleting when a void or refund already used it." },
+  ],
+}
+
+export const transactionCodesConfig: ScreenConfig = {
+  doctype: "Transaction Code",
+  title: "Transaction Codes",
+  description:
+    "Chart of posting codes for the folio journal - revenue, payment, tax, package and adjustment. Ledgers and night audit group by these. Leave Property blank for every property; set it to override for one hotel only.",
+  searchFields: ["code", "description", "revenue_group"],
+  filters: [
+    { field: "txn_type", label: "Type",
+      options: ["Revenue", "Payment", "Tax", "Package", "Adjustment"] },
+    { field: "disabled", label: "Disabled", options: ["0", "1"] },
+  ],
+  pageSize: 50,
+  orderBy: "txn_type, code",
+  columns: [
+    { field: "code", label: "Code" },
+    { field: "description", label: "Description" },
+    { field: "txn_type", label: "Type", badge: true },
+    { field: "revenue_group", label: "Group" },
+    { field: "default_tax_rate", label: "Tax %" },
+    { field: "disabled", label: "Status", statusCheck: true },
+  ],
+  form: [
+    { field: "code", label: "Code", type: "data", required: true,
+      hint: "Short stable id (e.g. 1000). Becomes the document name - do not rename after use." },
+    { field: "description", label: "Description", type: "data", required: true },
+    { field: "property", label: "Property", type: "link", linkDoctype: "Property",
+      hint: "Blank = all properties. Set only for a property-specific override." },
+    { field: "txn_type", label: "Type", type: "select", required: true,
+      options: ["Revenue", "Payment", "Tax", "Package", "Adjustment"] },
+    { field: "revenue_group", label: "Revenue group", type: "data",
+      hint: "e.g. Rooms, F&B, Other - used on ledgers and exports." },
+    { field: "subgroup", label: "Subgroup", type: "data" },
+    { field: "default_tax_rate", label: "Default tax %", type: "float" },
+    { field: "is_alcohol", label: "Alcohol", type: "check",
+      hint: "Alcohol never bills a Company folio." },
+    { field: "charge_type", label: "Legacy charge type", type: "select",
+      options: [
+        "Room", "Meal Plan", "Food & Beverage", "Minibar", "Laundry", "Spa",
+        "Early Check-in", "Late Checkout", "Cleaning Fee", "Extra Guests",
+        "Pet Charge", "Room Levy", "Discount", "Misc", "Allowance", "Opening Balance",
+      ],
+      hint: "Maps to Folio Charge.charge_type for display on older lines." },
+    { field: "disabled", label: "Disabled", type: "check",
+      hint: "Turn off instead of deleting when the journal already posted it." },
   ],
 }

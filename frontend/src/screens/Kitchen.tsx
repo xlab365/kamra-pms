@@ -1,14 +1,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   ChefHat, Check, RefreshCw, Clock, X, Undo2, TriangleAlert, Flame, Lock,
-  Martini, CookingPot, Utensils, Bell, BellOff, Play, Inbox, Maximize2, Minimize2,
+  Martini, CookingPot, Utensils, Bell, BellOff, Play, Inbox, Maximize2, Minimize2, Menu,
+  Focus, LogOut,
 } from "lucide-react"
+import { useNavigate } from "react-router-dom"
 import { call, getCurrentProperty } from "../lib/api"
 import { subscribeRealtime } from "../lib/realtime"
 import { Button } from "../components/ui/button"
 import { cn } from "../lib/utils"
 import { cur } from "../lib/money"
 import { useFloorFullscreen } from "../lib/kiosk"
+import { useT, t as translate, uiDateLocale } from "../lib/i18n"
+import { usePref } from "../lib/notifications"
+import { playAlert, previewSound } from "../lib/sound"
+import { usePrintStation, type StationPrinter } from "../lib/printStation"
+
 
 type LineState = "cooking" | "held" | "cancelled" | "done"
 
@@ -47,13 +54,12 @@ interface KotOrder {
   items: KotItem[]
 }
 
-// Mirrors pos.py: the order food is served in, and the stations a KOT prints to.
-const COURSE_ORDER = ["Starter", "Main", "Dessert", "Drink"]
-const STATIONS = ["Kitchen", "Tandoor", "Grill", "Fryer", "Bar"]
+// Defaults; Settings → F&B → Menu master lists overrides per property.
+const DEFAULT_COURSES = ["Starter", "Main", "Dessert", "Drink"]
+const DEFAULT_STATIONS = ["Kitchen", "Tandoor", "Grill", "Fryer", "Bar"]
 // The kitchen's own thresholds, in minutes: fresh, working, needs eyes.
 const AMBER_AT = 5
 const LATE_AT = 10
-const CHIME_KEY = "kamra.kds.chime"
 
 const STATION_ICON: Record<string, typeof Flame> = {
   Kitchen: ChefHat, Tandoor: Flame, Grill: Flame, Fryer: CookingPot, Bar: Martini,
@@ -63,7 +69,7 @@ function parse(iso: string): number {
   return new Date(iso.replace(" ", "T")).getTime()
 }
 function clockOf(ms: number): string {
-  return new Date(ms).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+  return new Date(ms).toLocaleTimeString(uiDateLocale([]), { hour: "numeric", minute: "2-digit" })
 }
 
 /* The cook's clock starts when the course was FIRED, never when the captain
@@ -117,10 +123,10 @@ function progressOf(o: KotOrder) {
 /* Where the food goes, in the words the kitchen uses. Takeaway and delivery
    have no table or room, and the pass needs to know to pack them. */
 function destination(o: KotOrder): string {
-  if (o.order_type === "Takeaway") return "TAKEAWAY"
-  if (o.order_type === "Delivery") return "DELIVERY"
-  if (o.room_no) return `Room ${o.room_no}`
-  if (o.table_no) return `Table ${o.table_no}`
+  if (o.order_type === "Takeaway") return translate("TAKEAWAY")
+  if (o.order_type === "Delivery") return translate("DELIVERY")
+  if (o.room_no) return translate("Room {n}", { n: String(o.room_no) })
+  if (o.table_no) return translate("Table {n}", { n: String(o.table_no) })
   return o.outlet_name
 }
 
@@ -151,41 +157,15 @@ function useNow(ms = 1000): number {
   return now
 }
 
-/* A ticket landing on a screen nobody is looking at is the whole reason KDS
-   chimes exist. Synthesised, so there is no asset to ship or fail to load. */
-function chime() {
-  try {
-    const Ctx = window.AudioContext ?? (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext
-    const ctx = new Ctx()
-    const t0 = ctx.currentTime
-    for (const [i, hz] of [880, 1320].entries()) {
-      const osc = ctx.createOscillator()
-      const gain = ctx.createGain()
-      const at = t0 + i * 0.13
-      osc.type = "sine"
-      osc.frequency.value = hz
-      gain.gain.setValueAtTime(0.0001, at)
-      gain.gain.exponentialRampToValueAtTime(0.25, at + 0.012)
-      gain.gain.exponentialRampToValueAtTime(0.0001, at + 0.12)
-      osc.connect(gain).connect(ctx.destination)
-      osc.start(at)
-      osc.stop(at + 0.13)
-    }
-    setTimeout(() => void ctx.close(), 600)
-  } catch {
-    // Browsers block audio until the screen has been touched once. The board
-    // still works; the chime starts once someone taps anything.
-  }
-}
-
 function VegDot({ veg }: { veg: 0 | 1 | null }) {
+  const { t } = useT()
   if (veg === null) return null
   // The Indian mark: green dot in a green square = veg, maroon triangle in a
   // maroon square = non-veg. Shape carries it, so it survives a colourblind
   // cook and a sun-washed screen.
   return (
     <span
-      aria-label={veg ? "Veg" : "Non-veg"}
+      aria-label={(veg ? t("Veg") : t("Non-veg"))}
       className={cn("grid size-4 shrink-0 place-items-center rounded-[3px] border-2",
         veg ? "border-emerald-600" : "border-rose-700")}>
       {veg ? (
@@ -200,32 +180,35 @@ function VegDot({ veg }: { veg: 0 | 1 | null }) {
 /* The allergen alarm. The match is a guard, not a guarantee, so the guest's
    own words always ride along with it. */
 function AllergyBadge({ hits }: { hits: string[] }) {
+  const { t } = useT()
   if (!hits.length) return null
   return (
     <span className="inline-flex items-center gap-1 rounded bg-rose-600 px-1.5 py-0.5 text-[10px] font-black uppercase tracking-wide text-white">
-      <TriangleAlert className="size-3" />{hits.join(" · ")} allergy
+      <TriangleAlert className="size-3" />{hits.join(" · ")} {t("allergy")}
     </span>
   )
 }
 
 function StationHead({ station, count }: { station: string; count: number }) {
+  const { t } = useT()
   const Icon = STATION_ICON[station] ?? Utensils
   return (
     <div className="flex items-center gap-2 pt-3">
       <Icon className="size-4 text-zinc-400" />
-      <span className="text-xs font-black uppercase tracking-wider text-zinc-500">{station}</span>
+      <span className="text-xs font-black uppercase tracking-wider text-zinc-500">{t(station)}</span>
       <span className="rounded bg-zinc-100 px-1.5 py-0.5 text-[10px] font-bold text-zinc-500">
-        {count} item{count === 1 ? "" : "s"}
+        {t("{n} item{s}", { n: count, s: count === 1 ? "" : "s" })}
       </span>
     </div>
   )
 }
 
 function Timeline({ order, now }: { order: KotOrder; now: number }) {
-  const t = timeline(order)
+  const { t } = useT()
+  const tl = timeline(order)
   const p = progressOf(order)
   const steps: [typeof Inbox, string, number | null][] = [
-    [Inbox, "Ordered", t.ordered], [Flame, "Fired", t.fired], [Check, "Ready", t.ready],
+    [Inbox, t("Ordered"), tl.ordered], [Flame, t("Fired"), tl.fired], [Check, t("Ready"), tl.ready],
   ]
   return (
     <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2 border-b border-zinc-200 bg-zinc-50/70 px-5 py-2.5">
@@ -233,16 +216,16 @@ function Timeline({ order, now }: { order: KotOrder; now: number }) {
         {steps.map(([Icon, label, at]) => (
           <div key={label} className="flex items-center gap-1.5">
             <Icon className={cn("size-4", at ? "text-brand-600" : "text-zinc-300")} />
-            <span className={cn("text-xs font-bold", at ? "text-zinc-700" : "text-zinc-400")}>{label}</span>
+            <span className={cn("text-xs font-bold", at ? "text-zinc-700" : "text-zinc-400")}>{translate(label)}</span>
             <span className={cn("text-xs tabular-nums", at ? "text-zinc-600" : "text-zinc-300")}>
-              {at ? clockOf(at) : "—"}
+              {at ? clockOf(at) : "-"}
             </span>
           </div>
         ))}
       </div>
       {p.total > 0 && (
         <div className="flex items-center gap-2">
-          <span className="text-xs font-bold tabular-nums text-zinc-600">{p.done} / {p.total} ready</span>
+          <span className="text-xs font-bold tabular-nums text-zinc-600">{p.done} / {p.total} {t("ready")}</span>
           <div className="h-1.5 w-28 overflow-hidden rounded-full bg-zinc-200">
             <div className="h-full rounded-full bg-brand-600 transition-all"
               style={{ width: `${Math.round((p.done / p.total) * 100)}%` }} />
@@ -259,6 +242,7 @@ function Line({ it, order, busy, onAction, big }: {
   onAction: (fn: string, params: Record<string, unknown>) => void
   big?: boolean
 }) {
+  const { t } = useT()
   const done = it.state === "done"
   return (
     <li className={cn("flex items-center gap-3", big ? "py-3" : "py-2")}>
@@ -286,18 +270,18 @@ function Line({ it, order, busy, onAction, big }: {
       {done ? (
         <Button disabled={busy === order.name + it.name}
           onClick={() => onAction("recall_prepared", { item_row: it.name })}
-          title="Undo — put it back on the board"
+          title={t("Undo - put it back on the board")}
           className={cn("shrink-0", big ? "h-12 px-6 text-base" : "h-9 px-3 text-xs")}>
-          <Check className={big ? "size-5" : "size-4"} />Ready
+          <Check className={big ? "size-5" : "size-4"} />{t("Ready")}
         </Button>
-      ) : (
+      ) : order.accepted_at ? (
         <Button variant="outline" disabled={busy === order.name + it.name}
           onClick={() => onAction("mark_prepared", { item_row: it.name })}
           className={cn("shrink-0 border-brand-600 text-brand-700",
             big ? "h-12 px-6 text-base" : "h-9 px-3 text-xs")}>
-          Mark ready
+          {t("Mark ready")}
         </Button>
-      )}
+      ) : null}
     </li>
   )
 }
@@ -307,13 +291,15 @@ function Line({ it, order, busy, onAction, big }: {
    tapping another card swaps this panel rather than needing a close first.
    The board reflows into the free half (see the grid below) so no card ends
    up hidden underneath. Targets stay large - gloved, wet, greasy hands. */
-function TicketDetail({ order, onClose, onAction, busy, now }: {
+function TicketDetail({ order, onClose, onAction, busy, now, stations }: {
   order: KotOrder
   onClose: () => void
   onAction: (fn: string, params: Record<string, unknown>) => void
   busy: string | null
   now: number
+  stations: string[]
 }) {
+  const { t } = useT()
   const secs = firedAgeSecs(order, now)
   const tone = ageTone(secs)
   const live = order.items.filter((i) => i.state === "cooking" || i.state === "done")
@@ -330,37 +316,40 @@ function TicketDetail({ order, onClose, onAction, busy, now }: {
 
   return (
     <aside
-      aria-label={`Ticket ${order.kot_no ?? ""} ${destination(order)}`}
+      aria-label={t("Ticket {kot} {dest}", {
+        kot: order.kot_no ?? "",
+        dest: destination(order),
+      })}
       className="fixed inset-y-0 right-0 z-50 flex w-full flex-col border-l border-zinc-200 bg-white shadow-2xl sm:w-1/2">
       <div className={cn("h-1.5 w-full shrink-0", tone.bar)} />
       <header className="flex shrink-0 items-start justify-between gap-4 px-5 py-4">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
             <span className="text-2xl font-black tabular-nums">
-              {order.kot_no ? `KOT ${order.kot_no}` : "KOT —"} · {destination(order)}
+              {order.kot_no ? translate("KOT {v0}", { v0: String(order.kot_no) }) : translate("KOT - ")} · {destination(order)}
             </span>
             {order.order_type && (
               <span className="rounded bg-brand-50 px-2 py-0.5 text-xs font-bold uppercase tracking-wide text-brand-700">
-                {order.order_type}
+                {translate(order.order_type)}
               </span>
             )}
           </div>
           <div className="mt-1 text-sm text-zinc-500">
-            {[order.captain ? `Captain: ${order.captain.split("@")[0]}` : null,
-              order.guests ? `${order.guests} guests` : null,
+            {[order.captain ? translate("Captain: {name}", { name: String(order.captain.split("@")[0]) }) : null,
+              order.guests ? translate("{diners} guests", { diners: String(order.guests) }) : null,
               order.outlet_name,
-              order.order_total ? `Order ${cur()}${Math.round(order.order_total)}` : null]
+              order.order_total ? translate("Order {amount}", { amount: String(`${cur()}${Math.round(order.order_total)}`) }) : null]
               .filter(Boolean).join(" · ")}
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-3">
           <div className="text-right">
             <div className={cn("text-3xl font-black tabular-nums leading-none", tone.text)}>
-              {secs === null ? "—" : `${Math.floor(secs / 60)}m`}
+              {secs === null ? "-" : translate("{v0}m", { v0: String(Math.floor(secs / 60)) })}
             </div>
-            <div className="mt-1 text-[10px] font-bold uppercase tracking-widest text-zinc-400">elapsed</div>
+            <div className="mt-1 text-[10px] font-bold uppercase tracking-widest text-zinc-400">{t("elapsed")}</div>
           </div>
-          <button onClick={onClose} aria-label="Back to board"
+          <button onClick={onClose} aria-label={t("Back to board")}
             className="grid size-12 place-items-center rounded-xl border border-zinc-300 text-zinc-600 hover:bg-zinc-100">
             <X className="size-6" />
           </button>
@@ -374,7 +363,7 @@ function TicketDetail({ order, onClose, onAction, busy, now }: {
           <div className="mb-3 flex items-start gap-2 rounded-xl border-2 border-rose-500 bg-rose-50 px-4 py-3">
             <TriangleAlert className="mt-0.5 size-5 shrink-0 text-rose-600" />
             <div>
-              <div className="text-xs font-black uppercase tracking-wide text-rose-700">Guest allergy</div>
+              <div className="text-xs font-black uppercase tracking-wide text-rose-700">{t("Guest allergy")}</div>
               <p className="text-base font-bold text-rose-900">{order.allergy_note}</p>
             </div>
           </div>
@@ -384,7 +373,7 @@ function TicketDetail({ order, onClose, onAction, busy, now }: {
           <div key={it.name} className="mb-3 rounded-xl border-2 border-rose-500 bg-rose-50 px-4 py-3">
             <div className="flex items-center justify-between gap-3">
               <div className="min-w-0">
-                <div className="text-xs font-black tracking-wide text-rose-700">CANCELLED — STOP COOKING</div>
+                <div className="text-xs font-black tracking-wide text-rose-700">{t("CANCELLED - STOP COOKING")}</div>
                 <div className="mt-0.5 truncate text-lg font-bold text-rose-900 line-through">
                   {Math.round(it.qty)}× {it.item_name}
                 </div>
@@ -393,13 +382,13 @@ function TicketDetail({ order, onClose, onAction, busy, now }: {
               <Button variant="outline" disabled={busy === order.name + it.name}
                 onClick={() => onAction("acknowledge_void", { item_row: it.name })}
                 className="h-12 shrink-0 border-rose-400 px-5 text-base text-rose-700">
-                Got it
+                {t("Got it")}
               </Button>
             </div>
           </div>
         ))}
 
-        {groupBy(live, (i) => i.prep_station ?? "Kitchen", STATIONS).map(([station, items]) => (
+        {groupBy(live, (i) => i.prep_station ?? "Kitchen", stations).map(([station, items]) => (
           <div key={station}>
             <StationHead station={station} count={items.length} />
             <ul className="divide-y divide-zinc-100">
@@ -417,12 +406,12 @@ function TicketDetail({ order, onClose, onAction, busy, now }: {
             <div key={course} className="mt-4 rounded-xl border-2 border-dashed border-amber-300 bg-amber-50/40 p-3">
               <div className="mb-2 flex items-center justify-between gap-3">
                 <span className="inline-flex items-center gap-1.5 text-xs font-black uppercase tracking-wider text-amber-700">
-                  <Lock className="size-3.5" />{course} · held
+                  <Lock className="size-3.5" />{translate(course)} · {t("held")}
                 </span>
                 <Button disabled={busy === order.name + course}
                   onClick={() => onAction("fire_kot", { course })}
                   className="h-11 bg-amber-600 px-5 text-base hover:bg-amber-700">
-                  <Flame className="size-4" />Fire {course.toLowerCase()}
+                  <Flame className="size-4" />{t("Fire {course}", { course: translate(course).toLowerCase() })}
                 </Button>
               </div>
               <ul className="space-y-1.5">
@@ -445,7 +434,7 @@ function TicketDetail({ order, onClose, onAction, busy, now }: {
           <div className="mt-4 flex items-start gap-2 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3">
             <TriangleAlert className="mt-0.5 size-4 shrink-0 text-amber-600" />
             <p className="text-sm font-semibold text-amber-900">
-              <span className="font-black">Table note: </span>{order.notes}
+              <span className="font-black">{t("Table note")}: </span>{order.notes}
             </p>
           </div>
         )}
@@ -456,18 +445,18 @@ function TicketDetail({ order, onClose, onAction, busy, now }: {
           <Button variant="outline" disabled={busy === order.name}
             onClick={() => onAction("recall_prepared", {})}
             className="h-16 shrink-0 px-6 text-base">
-            <Undo2 className="size-5" />Recall
+            <Undo2 className="size-5" />{t("Recall")}
           </Button>
         )}
         {!order.accepted_at && anyCooking ? (
           <Button disabled={busy === order.name} onClick={() => onAction("accept_ticket", {})}
             className="h-16 flex-1 justify-center bg-amber-600 text-lg font-bold hover:bg-amber-700">
-            <Play className="size-6" />Start / accept
+            <Play className="size-6" />{t("Start")}
           </Button>
         ) : anyCooking ? (
           <Button disabled={busy === order.name} onClick={() => onAction("mark_prepared", {})}
             className="h-16 flex-1 justify-center text-lg font-bold">
-            <Check className="size-6" />All ready — send to pass
+            <Check className="size-6" />{t("All ready - send to pass")}
           </Button>
         ) : null}
       </footer>
@@ -476,24 +465,45 @@ function TicketDetail({ order, onClose, onAction, busy, now }: {
 }
 
 export default function Kitchen() {
+  const { t } = useT()
   const [station, setStation] = useState("")
   const [outlet, setOutlet] = useState("")
   const [outlets, setOutlets] = useState<{ name: string; outlet_name: string }[]>([])
+  const [stations, setStations] = useState<string[]>(DEFAULT_STATIONS)
+  const [courses, setCourses] = useState<string[]>(DEFAULT_COURSES)
   const [orders, setOrders] = useState<KotOrder[]>([])
   const [busy, setBusy] = useState<string | null>(null)
   const [openOrder, setOpenOrder] = useState<string | null>(null)
-  const [sound, setSound] = useState(() => localStorage.getItem(CHIME_KEY) !== "off")
+  // the POS and kitchen sound has its own switch (also in the sidebar)
+  const [sound, setSoundPref] = usePref("pos")
   const rootRef = useRef<HTMLDivElement>(null)
   const openOrderRef = useRef<string | null>(null)
   openOrderRef.current = openOrder
-  const { kioskOn, browserFs, toggleBrowserFs } = useFloorFullscreen(rootRef, {
+  const { kioskOn, browserFs, toggleBrowserFs, toggleFocus, exitFloor } = useFloorFullscreen(rootRef, {
     blockEscape: () => !!openOrderRef.current,
   })
+  const navigate = useNavigate()
   const now = useNow()
 
   useEffect(() => {
     call<{ name: string; outlet_name: string }[]>("kamra.pos.outlets", { property: getCurrentProperty() })
       .then(setOutlets).catch(() => {})
+    call<{ prep_stations: string[]; courses: string[] }>("kamra.settings.menu_masters", {
+      property: getCurrentProperty(),
+    }).then((m) => {
+      if (m.prep_stations?.length) setStations(m.prep_stations)
+      if (m.courses?.length) setCourses(m.courses)
+    }).catch(() => {})
+  }, [])
+
+  // Print station: this screen prints a kitchen printer's tickets on the
+  // printer attached to this device.
+  const [stationPrinters, setStationPrinters] = useState<StationPrinter[]>([])
+  const printStation = usePrintStation()
+  useEffect(() => {
+    call<StationPrinter[]>("kamra.printing.printers", { property: getCurrentProperty() })
+      .then((ps) => setStationPrinters(ps.filter((p) => p.connection === "Print station" && !p.disabled)))
+      .catch(() => {})
   }, [])
 
   const load = useCallback(() => {
@@ -508,10 +518,13 @@ export default function Kitchen() {
     load()
     // live: re-fetch the moment an order fires or a line is marked ready
     // (socket via subscribeRealtime, with its own polling fallback)
-    const unsub = subscribeRealtime(load)
+    const unsub = subscribeRealtime(load, {
+      filter: (e) => e.doctype === "POS Order" && (!outlet || !e.outlet || e.outlet === outlet),
+      fallbackMs: 5000,
+    })
     const t = setInterval(load, 15_000) // safety net
     return () => { unsub(); clearInterval(t) }
-  }, [load])
+  }, [load, outlet])
 
   // Chime only for tickets that arrive after this screen has settled, so a
   // reload or a filter change does not sound like a rush.
@@ -521,16 +534,13 @@ export default function Kitchen() {
     if (seen.current === null) { seen.current = ids; return }
     const fresh = [...ids].some((id) => !seen.current!.has(id))
     seen.current = ids
-    if (fresh && sound) chime()
+    if (fresh && sound) playAlert("pos")
   }, [orders, sound])
 
   const toggleSound = useCallback(() => {
-    setSound((on) => {
-      localStorage.setItem(CHIME_KEY, on ? "off" : "on")
-      if (!on) chime() // confirm it works, and unlock audio on this tap
-      return !on
-    })
-  }, [])
+    setSoundPref(!sound)
+    if (!sound) previewSound() // confirm it works, and unlock audio on this tap
+  }, [sound, setSoundPref])
 
   const act = useCallback(async (order: string, fn: string, params: Record<string, unknown>) => {
     setBusy(order + (params.item_row ?? params.course ?? ""))
@@ -558,7 +568,7 @@ export default function Kitchen() {
   // back to the board rather than stranding the chef on a dead ticket.
   const open = openOrder ? orders.find((o) => o.name === openOrder) : undefined
   useEffect(() => {
-    // Clear even when the queue empties — requiring orders.length left a stale
+    // Clear even when the queue empties - requiring orders.length left a stale
     // openOrder that blocked Escape from exiting kiosk with no drawer visible.
     if (openOrder && !open) setOpenOrder(null)
   }, [openOrder, orders, open])
@@ -572,44 +582,86 @@ export default function Kitchen() {
       open && "sm:pr-[calc(50vw+1rem)]")}>
       <div className="flex shrink-0 flex-wrap items-center justify-between gap-3">
         <h1 className="flex items-center gap-2 text-xl font-bold text-zinc-800">
-          <ChefHat className="size-5 text-brand-600" />Kitchen pass
-          <span className="text-sm font-medium text-zinc-400">{orders.length} tickets</span>
+          <ChefHat className="size-5 text-brand-600" />{t("Kitchen pass")}
+          <span className="text-sm font-medium text-zinc-400">{t("{n} tickets", { n: orders.length })}</span>
         </h1>
         <div className="flex flex-wrap items-center gap-2">
           <select
             className="rounded-lg border border-zinc-300 bg-white px-2.5 py-1.5 text-sm"
             value={outlet} onChange={(e) => setOutlet(e.target.value)}>
-            <option value="">All outlets</option>
+            <option value="">{t("All outlets")}</option>
             {outlets.map((o) => <option key={o.name} value={o.name}>{o.outlet_name}</option>)}
           </select>
+          {(stationPrinters.length > 0 || printStation.printer) && (
+            <label className="inline-flex items-center gap-1.5 text-sm"
+              title={(printStation.error
+                ? printStation.error
+                : printStation.last
+                  ? t("Last printed {n} ticket(s) at {time}", {
+                    n: printStation.last.count,
+                    time: printStation.last.at.toLocaleTimeString(uiDateLocale([]), { hour: "2-digit", minute: "2-digit" }),
+                  })
+                  : t("Tickets for this printer print on this device's default printer."))}>
+              <span className={cn("size-2 rounded-full",
+                !printStation.printer ? "bg-zinc-300" : printStation.error ? "bg-rose-500" : "bg-emerald-500")} />
+              <select
+                className="rounded-lg border border-zinc-300 bg-white px-2.5 py-1.5 text-sm"
+                value={printStation.printer} onChange={(e) => printStation.choose(e.target.value)}>
+                <option value="">{t("Don't print here")}</option>
+                {stationPrinters.map((p) => (
+                  <option key={p.name} value={p.name}>{t("Print for {printer}", { printer: p.printer_name })}</option>
+                ))}
+              </select>
+            </label>
+          )}
           <div className="flex flex-wrap rounded-lg border border-zinc-200 bg-white p-0.5 text-sm">
-            {["", ...STATIONS].map((s) => (
+            {["", ...stations].map((s) => (
               <button key={s} onClick={() => setStation(s)}
                 className={"rounded-md px-3 py-1.5 font-medium " +
                   (station === s ? "bg-brand-600 text-white" : "text-zinc-600")}>
-                {s || "All"}
+                {s ? t(s) : t("All")}
               </button>
             ))}
           </div>
+          {kioskOn && (
+            <button type="button" onClick={exitFloor}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-300 bg-white px-2.5 py-1.5 text-sm font-medium text-zinc-600 hover:bg-zinc-50"
+              title={translate("Show the app menu (Esc)")}>
+              <Menu className="size-4" />{translate("Menu")}</button>
+          )}
           <button onClick={toggleSound}
             aria-pressed={sound}
             className={cn("inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-sm font-medium",
               sound ? "border-amber-300 bg-amber-50 text-amber-700" : "border-zinc-300 bg-white text-zinc-400")}>
             {sound ? <Bell className="size-4" /> : <BellOff className="size-4" />}
-            Sound {sound ? "on" : "off"}
+            {t("Sound {state}", { state: sound ? t("on") : t("off") })}
+          </button>
+          <button onClick={toggleFocus}
+            className={cn("rounded-lg border p-2",
+              kioskOn
+                ? "border-brand-600 bg-brand-50 text-brand-800"
+                : "border-zinc-300 bg-white text-zinc-600 hover:bg-zinc-50")}
+            title={(kioskOn ? t("Show PMS menus (Esc)") : t("Focus mode - hide PMS menus"))}>
+            <Focus className="size-4" />
           </button>
           <button onClick={toggleBrowserFs}
             className="rounded-lg border border-zinc-300 bg-white p-2 text-zinc-600 hover:bg-zinc-50"
-            title={browserFs ? "Exit full screen (Esc)" : "Browser full screen"}>
+            title={(browserFs ? t("Exit full screen (Esc)") : t("Browser full screen"))}>
             {browserFs ? <Minimize2 className="size-4" /> : <Maximize2 className="size-4" />}
           </button>
-          <button onClick={load} aria-label="Refresh"><RefreshCw className="size-5 text-zinc-400" /></button>
+          <button onClick={() => { exitFloor(); navigate("/") }}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-300 bg-white px-2.5 py-2 text-xs font-semibold text-zinc-600 hover:bg-zinc-50"
+            title={t("Exit the kitchen pass - back to the PMS")}>
+            <LogOut className="size-4" />
+            <span className="hidden xl:inline">{t("Exit")}</span>
+          </button>
+          <button onClick={load} aria-label={t("Refresh")}><RefreshCw className="size-5 text-zinc-400" /></button>
         </div>
       </div>
 
       {orders.length === 0 ? (
         <div className="flex flex-1 items-center justify-center rounded-2xl border border-dashed border-zinc-300 p-12 text-center text-zinc-400">
-          No open tickets. The kitchen is clear.
+          {t("No open tickets. The kitchen is clear.")}
         </div>
       ) : (
         <div className={cn("min-h-0 flex-1 overflow-y-auto",
@@ -625,6 +677,7 @@ export default function Kitchen() {
             const stations = [...new Set(live.map((i) => i.prep_station).filter(Boolean))]
             const tags = [...stations, ...serviceTags(o)]
             const anyCooking = live.some((i) => i.state === "cooking")
+            const waiting = !o.accepted_at && anyCooking
             return (
               <div key={o.name}
                 className={cn("flex flex-col overflow-hidden rounded-2xl border-2 bg-white",
@@ -634,27 +687,33 @@ export default function Kitchen() {
                   className="w-full px-3 py-2 text-left hover:bg-zinc-50">
                   <div className="flex items-start justify-between gap-2">
                     <span className="min-w-0 text-[10px] font-black uppercase tracking-wider text-zinc-400">
-                      {o.kot_no ? `KOT ${o.kot_no} · ` : ""}{o.order_type}
+                      {o.kot_no ? translate("KOT {v0} · ", { v0: String(o.kot_no) }) : ""}{o.order_type}
                     </span>
-                    <span className={cn("shrink-0 text-[10px] font-black uppercase tracking-wider", tone.text)}>
-                      {statusWord(secs)}
+                    <span className={cn("shrink-0 text-[10px] font-black uppercase tracking-wider",
+                      waiting ? "text-amber-700" : tone.text)}>
+                      {waiting
+                        ? (statusWord(secs) === "LATE" ? t("LATE") : t("WAITING"))
+                        : statusWord(secs) === "HELD" ? t("HELD")
+                          : statusWord(secs) === "LATE" ? t("LATE")
+                            : statusWord(secs) === "COOKING" ? t("COOKING")
+                              : t("NEW")}
                     </span>
                   </div>
                   <div className="flex items-end justify-between gap-2">
                     <span className="min-w-0 truncate text-lg font-bold text-zinc-900">{destination(o)}</span>
                     <span className={cn("inline-flex shrink-0 items-center gap-1 text-lg font-black tabular-nums", tone.text)}>
-                      <Clock className="size-4" />{secs === null ? "—" : `${Math.floor(secs / 60)}m`}
+                      <Clock className="size-4" />{secs === null ? "-" : translate("{v0}m", { v0: String(Math.floor(secs / 60)) })}
                     </span>
                   </div>
                   <div className="truncate text-xs text-zinc-400">
-                    {[o.guests ? `${o.guests} guests` : null,
-                      o.captain ? `Capt. ${o.captain.split("@")[0]}` : null].filter(Boolean).join(" · ")}
+                    {[o.guests ? translate("{diners} guests", { diners: String(o.guests) }) : null,
+                      o.captain ? translate("Capt. {name}", { name: String(o.captain.split("@")[0]) }) : null].filter(Boolean).join(" · ")}
                   </div>
                   {tags.length > 0 && (
                     <div className="mt-1.5 flex flex-wrap gap-1">
                       {tags.map((t) => (
                         <span key={t} className="rounded bg-zinc-100 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-zinc-500">
-                          {t}
+                          {translate(t)}
                         </span>
                       ))}
                     </div>
@@ -672,15 +731,15 @@ export default function Kitchen() {
                   <button onClick={() => setOpenOrder(o.name)}
                     className="flex items-center gap-1.5 bg-rose-50 px-3 py-1.5 text-left text-xs font-black text-rose-700">
                     <TriangleAlert className="size-3.5 shrink-0" />
-                    {cancelled.length} CANCELLED — STOP
+                    {cancelled.length} {t("CANCELLED - STOP")}
                   </button>
                 )}
 
                 <div className="flex-1 border-t border-zinc-100 px-3">
-                  {groupBy(live, (i) => i.course, COURSE_ORDER).map(([course, items]) => (
+                  {groupBy(live, (i) => i.course, courses).map(([course, items]) => (
                     <div key={course}>
                       <div className="pt-2 text-[10px] font-black uppercase tracking-wider text-zinc-400">
-                        {course}
+                        {t(course)}
                       </div>
                       <ul className="divide-y divide-zinc-50">
                         {items.map((it) => (
@@ -694,7 +753,7 @@ export default function Kitchen() {
 
                 {p.total > 0 && (
                   <div className="px-3 py-1 text-right text-[11px] font-bold tabular-nums text-zinc-400">
-                    {p.done} of {p.total} ready
+                    {p.done} {t("of")} {p.total} {t("ready")}
                   </div>
                 )}
 
@@ -708,13 +767,15 @@ export default function Kitchen() {
                   <div key={course} className="mx-2 mb-2 rounded-lg border border-dashed border-amber-300 bg-amber-50/50 p-1.5">
                     <div className="flex items-center justify-between gap-2">
                       <span className="inline-flex items-center gap-1 truncate text-[10px] font-black uppercase tracking-wider text-amber-700">
-                        <Lock className="size-3" />{course} held ·{" "}
-                        {held.filter((i) => i.course === course).length}
+                        <Lock className="size-3" />{t("{course} held · {n}", {
+                          course,
+                          n: held.filter((i) => i.course === course).length,
+                        })}
                       </span>
                       <Button disabled={busy === o.name + course}
                         onClick={() => act(o.name, "fire_kot", { course })}
                         className="h-9 shrink-0 bg-amber-600 px-3 text-xs hover:bg-amber-700">
-                        <Flame className="size-3.5" />Fire
+                        <Flame className="size-3.5" />{t("Fire")}
                       </Button>
                     </div>
                   </div>
@@ -722,16 +783,16 @@ export default function Kitchen() {
 
                 {anyCooking && (
                   <div className="p-2 pt-0">
-                    {!o.accepted_at ? (
+                    {waiting ? (
                       <Button variant="outline" disabled={busy === o.name}
                         onClick={() => act(o.name, "accept_ticket", {})}
                         className="h-11 w-full justify-center border-amber-400 text-amber-700 hover:bg-amber-50">
-                        <Flame className="size-4" />Start / accept
+                        <Play className="size-4" />{t("Start")}
                       </Button>
                     ) : (
                       <Button className="h-11 w-full justify-center" disabled={busy === o.name}
                         onClick={() => act(o.name, "mark_prepared", {})}>
-                        <Check className="size-4" />All ready
+                        <Check className="size-4" />{t("All ready")}
                       </Button>
                     )}
                   </div>
@@ -743,7 +804,7 @@ export default function Kitchen() {
       )}
 
       {open && (
-        <TicketDetail order={open} busy={busy} now={now}
+        <TicketDetail order={open} busy={busy} now={now} stations={stations}
           onClose={() => setOpenOrder(null)}
           onAction={(fn, params) => act(open.name, fn, params)} />
       )}

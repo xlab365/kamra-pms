@@ -13,6 +13,7 @@
   "column_break_a",
   "floor_price",
   "ceiling_price",
+  "days_of_week",
   "disabled"
  ],
  "fields": [
@@ -50,6 +51,12 @@
    "in_list_view": 1,
    "label": "Ceiling Price",
    "reqd": 1
+  },
+  {
+   "fieldname": "days_of_week",
+   "fieldtype": "Data",
+   "label": "Days of Week",
+   "description": "Days this rail applies, e.g. fri,sat. Blank = every day."
   },
   {
    "default": "0",

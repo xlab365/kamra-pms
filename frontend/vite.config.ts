@@ -13,6 +13,16 @@ export default defineConfig(({ command }) => ({
     outDir: "../kamra/public/frontend",
     emptyOutDir: true,
     sourcemap: false,
+    rollupOptions: {
+      output: {
+        // React and the router change far less often than app code: a
+        // separate chunk stays cached in browsers across Kamra releases.
+        manualChunks(id) {
+          if (/node_modules\/(react|react-dom|react-router|react-router-dom|scheduler|cookie|set-cookie-parser)\//.test(id))
+            return "vendor"
+        },
+      },
+    },
   },
   server: {
     // Defaults preserved; override with env when the standard ports are taken

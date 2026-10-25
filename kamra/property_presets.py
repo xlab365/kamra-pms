@@ -78,3 +78,56 @@ def apply_kind_defaults(property_fields: dict) -> dict:
 
 def skip_meal_plans(kind: str | None) -> bool:
 	return normalize_kind(kind) == KIND_STR
+
+
+# Fields a kind preset may fill. Anything else on the Property belongs to
+# the operator and is never touched by a kind change.
+PRESET_FIELDS = (
+	"overbooking_pct",
+	"enabled_modules",
+	"booking_mode",
+	"hold_minutes",
+	"hourly_view_start",
+	"hourly_view_end",
+)
+
+
+def _module_set(raw: str | None) -> set:
+	return {m.strip() for m in (raw or "").split(",") if m.strip()}
+
+
+def apply_kind_change(doc) -> list:
+	"""Apply the new kind's preset to an existing Property (``doc``).
+
+	Same rule as creation (``apply_kind_defaults``): only preset fields
+	that are empty get filled, so a value the admin set explicitly wins.
+	One extra case: leaving Short Term Rental while the module list is
+	still exactly the STR preset puts it back to the hotel preset (empty =
+	all modules) - that list was the preset, not an operator choice.
+
+	Mutates ``doc`` in place (the caller saves) and returns the changed
+	fieldnames.
+	"""
+	kind = normalize_kind(doc.get("property_kind"))
+	changed = []
+	if kind != doc.get("property_kind"):
+		doc.set("property_kind", kind)
+		changed.append("property_kind")
+
+	if kind == KIND_HOTEL and _module_set(doc.get("enabled_modules")) == set(STR_MODULES):
+		doc.set("enabled_modules", "")
+		changed.append("enabled_modules")
+
+	current = {
+		f: doc.get(f) for f in PRESET_FIELDS
+		if doc.get(f) not in (None, "")
+	}
+	filled = apply_kind_defaults({"property_kind": kind, **current})
+	for f in PRESET_FIELDS:
+		if f in current or f not in filled:
+			continue
+		if filled[f] in (None, ""):
+			continue
+		doc.set(f, filled[f])
+		changed.append(f)
+	return changed
