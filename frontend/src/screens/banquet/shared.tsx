@@ -102,30 +102,30 @@ export const CATALOGUE_UOMS = [
   "Per Unit",
 ]
 export const EVENT_TYPES = [
-  "Wedding",
+ /* "Wedding",
   "Reception",
   "Sangeet",
   "Mehendi",
   "Engagement",
-  "Conference",
+  "Conference", */
   "Seminar",
-  "Training",
+ // "Training",
   "Product Launch",
   "Birthday",
   "Anniversary",
   "Corporate Offsite",
-  "Exhibition",
+ // "Exhibition",
   "Other",
 ]
 export const SETUP_STYLES = [
-  "Theatre",
+  /* "Theatre",
   "Classroom",
-  "U-Shape",
+  "U-Shape", */
   "Boardroom",
-  "Cluster",
+  // "Cluster",
   "Round Table",
-  "Herringbone",
-  "Floating",
+  // "Herringbone",
+  // "Floating",
   "Custom",
 ]
 export const SOURCES = [
@@ -160,9 +160,9 @@ export const SERVICE_STYLES = [
 export const PAY_MODES = [
   "Cash",
   "Card",
-  "UPI",
+  // "UPI",
   "Bank Transfer",
-  "Cheque",
+  // "Cheque",
   "Other",
 ]
 
