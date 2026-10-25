@@ -94,12 +94,12 @@ export const APPS: AppDef[] = [
     items: [
       { to: "/", label: "Today", icon: Home },
       { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
-      { to: "/assistant", label: "Kamra Agent", icon: Sparkles },
-      { to: "/reservations", label: "Reservations", icon: ClipboardList },
-      { to: "/crs", label: "Central Reservations", icon: Search },
+      /*{ to: "/assistant", label: "Kamra Agent", icon: Sparkles }, 
+      { to: "/reservations", label: "Reservations", icon: ClipboardList }, 
+      { to: "/crs", label: "Central Reservations", icon: Search },  */
       { to: "/tape", label: "Tape Chart", icon: LayoutGrid },
       { to: "/calendar", label: "Calendar", icon: CalendarDays },
-      { to: "/guests", label: "Guests", icon: Users },
+      // { to: "/guests", label: "Guests", icon: Users },
       { to: "/room-blocks", label: "Room Blocks", icon: Lock },
     ],
     extraPrefixes: ["/grc", "/cancelled", "/agents"],
@@ -124,7 +124,7 @@ export const APPS: AppDef[] = [
     icon: ListTodo,
     tint: APP_TILE,
     description: "Guest requests and shift handovers.",
-    roles: ["Front Desk", "Hotel Admin", "System Manager", "Administrator"],
+    roles: [/**"Front Desk", */ "Hotel Admin", "System Manager", "Administrator"],
     items: [
       { to: "/tickets", label: "Guest Requests", icon: Ticket },
       { to: "/whatsapp", label: "WhatsApp", icon: MessageCircle },
@@ -140,7 +140,7 @@ export const APPS: AppDef[] = [
     icon: UtensilsCrossed,
     tint: APP_TILE,
     description: "Restaurant POS, kitchen display, the menu and kitchen stock.",
-    roles: ["Front Desk", "Finance", "Hotel Admin", "System Manager", "Administrator"],
+    roles: ["Front Desk", /** "Finance", */ "Hotel Admin", "System Manager", "Administrator"],
     items: [
       { to: "/pos", label: "Restaurant POS", icon: UtensilsCrossed },
       { to: "/kitchen", label: "Kitchen Display", icon: ConciergeBell },
@@ -156,7 +156,7 @@ export const APPS: AppDef[] = [
     tint: APP_TILE,
     description:
       "Function prospecting, quotations and event orders - plus room blocks and pickup.",
-    roles: ["Front Desk", "Revenue Manager", "Hotel Admin", "System Manager", "Administrator"],
+    roles: ["Front Desk", "Revenue Manager", "Hotel Admin", "System Manager", "Administrator", "Finance"],
     items: [
       { to: "/banquet", label: "Banquets", icon: CalendarRange },
       { to: "/banquet-month", label: "Month Availability", icon: CalendarRange },
@@ -175,7 +175,7 @@ export const APPS: AppDef[] = [
     icon: BarChart3,
     tint: APP_TILE,
     description: "Rates, seasons, offers and the partners who sell you.",
-    roles: ["Revenue Manager", "Hotel Admin", "System Manager", "Administrator"],
+    roles: ["Revenue Manager", "Hotel Admin", "System Manager", "Administrator", "Finance"],
     items: [
       { to: "/revenue-reports", label: "Revenue Reports", icon: ChartLine },
       { to: "/channel-manager", label: "Channel Manager", icon: Share2 },
@@ -210,7 +210,7 @@ export const APPS: AppDef[] = [
     icon: Globe,
     tint: APP_TILE,
     description: "Manage direct booking setup, property profile, photo gallery, FAQs, and SEO rules.",
-    roles: ["Revenue Manager", "Hotel Admin", "System Manager", "Administrator"],
+    roles: [ /** "Revenue Manager", */ "Hotel Admin", "System Manager", "Administrator"],
     items: [
       { to: "/booking-settings/profile", label: "Hotel Profile", icon: Home },
       { to: "/booking-settings/amenities", label: "Amenities", icon: ClipboardList },
