@@ -131,7 +131,7 @@ export function BookingDialog(props: {
     phone: props.initial.phone ?? "",
     room_type: props.initial.room_type ?? "",
     check_in_date: props.initial.date ?? new Date().toISOString().slice(0, 10),
-    nights: 0,
+    nights: 1,
     adults: 2,
     children: 0,
     meal_plan: "",
@@ -338,7 +338,7 @@ export function BookingDialog(props: {
   const checkOut = (() => {
     if (dayUse) return form.check_in_date
     const d = new Date(form.check_in_date)
-    d.setDate(d.getDate() + Math.max(0, form.nights))
+    d.setDate(d.getDate() + Math.max(1, form.nights))
     return d.toISOString().slice(0, 10)
   })()
 
