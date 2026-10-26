@@ -20,12 +20,12 @@ export default function EditableNationality(props: {
   const variant = props.variant ?? "inline"
   const displayed = props.value?.trim() || "-"
   const [editing, setEditing] = useState(false)
-  const [val, setVal] = useState(props.value ?? "Indian")
+  const [val, setVal] = useState(props.value ?? "-")
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    if (!editing) setVal(props.value ?? "Indian")
+    if (!editing) setVal(props.value ?? "-")
   }, [props.value, editing])
 
   async function save() {
@@ -45,7 +45,7 @@ export default function EditableNationality(props: {
   }
 
   function startEdit() {
-    setVal(props.value ?? "Indian")
+    setVal(props.value ?? "-")
     setError(null)
     setEditing(true)
   }
@@ -60,7 +60,7 @@ export default function EditableNationality(props: {
         list={listId}
       />
       <datalist id={listId}>
-        {["Indian", "American", "British", "Canadian", "Australian", "German", "French", "Japanese", "Chinese", "Singaporean", "UAE", "Other"].map(
+        {["Indian", "American", "British", "Canadian", "Australian", "German", "French", "Japanese", "Chinese", "Singaporean", "UAE", "Sri Lankan", "Russian", "Other"].map(
           (n) => (
             <option key={n} value={n} />
           ),
