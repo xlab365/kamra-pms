@@ -115,8 +115,8 @@ export const APPS: AppDef[] = [
     roles: ["Front Desk", "Night Auditor", "Hotel Admin", "System Manager", "Administrator"],
     items: [
       { to: "/", label: "Today", icon: Home },
-      /* { to: "/assistant", label: "Kamra Agent", icon: Sparkles, featured: true,
-        keywords: ["AI", "Assistant", "Copilot", "Ask"] }, */
+      { to: "/assistant", label: "Kamra Agent", icon: Sparkles, featured: true,
+        keywords: ["AI", "Assistant", "Copilot", "Ask"], roles: ["Hotel Admin", "System Manager", "Administrator"] }, 
       { to: "/in-house", label: "In House", icon: BedDouble,
         keywords: ["Arrivals", "Departures", "In-house guests", "Who is in", "Due out"] },
       { to: "/reservations", label: "Reservations", icon: ClipboardList },
@@ -127,7 +127,7 @@ export const APPS: AppDef[] = [
       { to: "/end-of-day", label: "Night Audit", icon: MoonStar,
         keywords: EOD_KEYWORDS, roles: ["Hotel Admin", "System Manager", "Administrator", "Night Auditor"] },
       { to: "/calendar", label: "Calendar", icon: CalendarDays },
-      //{ to: "/crs", label: "Central Reservations", icon: Search },
+      { to: "/crs", label: "Central Reservations", icon: Search, roles: ["Hotel Admin", "System Manager", "Administrator"] },
       { to: "/room-blocks", label: "Room Blocks", icon: Lock },
       { to: "/reports", label: "Reports", icon: ChartLine, roles: ["Hotel Admin", "System Manager", "Administrator"] },
       { to: "/settings/front-desk", label: "Settings", icon: SettingsIcon,
